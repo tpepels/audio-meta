@@ -294,7 +294,12 @@ class MusicBrainzClient:
         for match in response.get("results", []):
             score = float(match.get("score", 0))
             for recording in match.get("recordings", []):
-                yield score, recording["id"], recording.get("title"), recording["artists"][0]["name"]
+                rec_id = recording.get("id")
+                if not rec_id:
+                    continue
+                artists = recording.get("artists") or []
+                artist_name = artists[0]["name"] if artists and isinstance(artists[0], dict) and "name" in artists[0] else None
+                yield score, rec_id, recording.get("title"), artist_name
 
     def _apply_recording(
         self,
