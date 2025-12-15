@@ -27,7 +27,7 @@ class TrackMetadata:
     match_confidence: Optional[float] = None
 
     def to_record(self) -> Dict[str, object]:
-        return {
+        payload = {
             "path": str(self.path),
             "fingerprint": self.fingerprint,
             "acoustid_id": self.acoustid_id,
@@ -47,15 +47,21 @@ class TrackMetadata:
             "extra": {key: self._serialize(value) for key, value in self.extra.items()},
             "match_confidence": self.match_confidence,
         }
+        return {key: self._serialize(value) for key, value in payload.items()}
 
     @staticmethod
     def _serialize(value: object) -> object:
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
-        if isinstance(value, list):
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (list, tuple)):
             return [TrackMetadata._serialize(item) for item in value]
         if isinstance(value, dict):
-            return {k: TrackMetadata._serialize(v) for k, v in value.items()}
+            return {
+                (k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k) if isinstance(k, Path) else k): TrackMetadata._serialize(v)
+                for k, v in value.items()
+            }
         return value
 
 
