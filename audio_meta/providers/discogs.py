@@ -5,6 +5,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -120,8 +121,16 @@ class DiscogsClient:
 
     def _join_artists(self, artists: List[dict]) -> Optional[str]:
         names = [artist.get("name") for artist in artists if artist.get("name")]
-        cleaned = [name.split(" (")[0].strip() for name in names]
-        return ", ".join(cleaned) if cleaned else None
+        cleaned = []
+        for name in names:
+            base = name.split(" (")[0]
+            parts = [part.strip() for part in re.split(r"[;,]+", base) if part.strip()]
+            cleaned.extend(parts or [base.strip()])
+        unique = []
+        for entry in cleaned:
+            if entry not in unique:
+                unique.append(entry)
+        return ", ".join(unique) if unique else None
 
     def _request(self, url: str) -> Optional[dict]:
         req = urllib.request.Request(url, headers={"User-Agent": self.useragent})
