@@ -28,11 +28,21 @@ class DryRunRecorder:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("", encoding="utf-8")
 
-    def record(self, meta: TrackMetadata, score: Optional[float], target_path: Optional[Path] = None) -> None:
+    def record(
+        self,
+        meta: TrackMetadata,
+        score: Optional[float],
+        tag_changes: Optional[dict] = None,
+        relocate_from: Optional[Path] = None,
+        relocate_to: Optional[Path] = None,
+    ) -> None:
         payload = meta.to_record()
         payload["match_score"] = score
-        if target_path:
-            payload["relocate_to"] = str(target_path)
+        if tag_changes:
+            payload["tag_changes"] = tag_changes
+        if relocate_to:
+            payload["relocate_from"] = str(relocate_from or meta.path)
+            payload["relocate_to"] = str(relocate_to)
         line = json.dumps(payload)
         with self._lock:
             with self.output_path.open("a", encoding="utf-8") as handle:
@@ -133,11 +143,19 @@ class AudioMetaDaemon:
             logger.info("No metadata match for %s", path)
             return
         is_classical = self.heuristics.adapt_metadata(meta)
-        needs_tags = self.tag_writer.has_changes(meta)
+        tag_changes = self.tag_writer.diff(meta)
+        needs_tags = bool(tag_changes)
         target_path = self.organizer.plan_target(meta, is_classical)
         if self.dry_run_recorder:
             if needs_tags or target_path:
-                self.dry_run_recorder.record(meta, result.score, target_path)
+                relocate_from = meta.path if target_path else None
+                self.dry_run_recorder.record(
+                    meta,
+                    result.score,
+                    tag_changes=tag_changes or None,
+                    relocate_from=relocate_from,
+                    relocate_to=target_path,
+                )
                 logger.info("Dry-run recorded planned update for %s", path)
                 if target_path:
                     self.organizer.move(meta, target_path, dry_run=True)

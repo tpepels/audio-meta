@@ -33,17 +33,23 @@ class TagWriter:
         handler(meta)
 
     def has_changes(self, meta: TrackMetadata) -> bool:
+        return bool(self.diff(meta))
+
+    def diff(self, meta: TrackMetadata) -> Dict[str, Dict[str, Optional[str]]]:
         ext = meta.path.suffix.lower()
         if ext not in self.SUPPORTED_EXTS:
-            return False
+            return {}
         current = self._read_tags(meta, ext)
-        if current is None:
-            return True
         desired = self._desired_map(meta)
+        changes: Dict[str, Dict[str, Optional[str]]] = {}
         for key, expected in desired.items():
-            if self._normalize(current.get(key)) != self._normalize(expected):
-                return True
-        return False
+            current_value = None if current is None else current.get(key)
+            if self._normalize(current_value) != self._normalize(expected):
+                changes[key] = {
+                    "old": current_value,
+                    "new": expected,
+                }
+        return changes
 
     def _desired_map(self, meta: TrackMetadata) -> Dict[str, Optional[str]]:
         return {

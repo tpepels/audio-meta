@@ -36,7 +36,7 @@ Preview planned tag changes without modifying files by writing them to a JSON Li
 audio-meta scan --config config.yaml --dry-run-output /tmp/audio-meta-preview.jsonl
 ```
 
-Each line contains the resolved metadata plus the lookup score so you can inspect matches before running the daemon for real.
+Each line contains the resolved metadata, tag differences (`tag_changes`), and any planned relocation (`relocate_from`/`relocate_to`) so you can inspect the exact changes before running the daemon for real.
 
 ### Organizer
 
