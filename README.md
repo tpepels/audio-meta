@@ -10,6 +10,7 @@ Audio metadata correction daemon for Linux libraries. The tool walks a directory
 - Watchdog-powered daemon mode that sits in the background and processes new or modified files immediately.
 - YAML configuration with per-directory overrides and rewrite rules for power users.
 - Filename heuristics plus release-level memory so that once a single track in an album matches MusicBrainz, the remaining tracks inherit consistent metadata even without fingerprints.
+- Optional organizer that keeps your library laid out as `/Artist/Album` (or `/Composer/Performer/Album` for classical works) and integrates with dry-run previews.
 
 ## Requirements
 
@@ -37,6 +38,19 @@ audio-meta scan --config config.yaml --dry-run-output /tmp/audio-meta-preview.js
 
 Each line contains the resolved metadata plus the lookup score so you can inspect matches before running the daemon for real.
 
+### Organizer
+
+Enable automatic folder layout by toggling the organizer in `config.yaml`:
+
+```yaml
+organizer:
+  enabled: true
+  target_root: /srv/music
+  classical_mixed_strategy: performer_album
+```
+
+Non-classical releases land in `/Artist/Album`. Classical albums default to `/Composer/Performer/Album`, but when multiple composers appear on the same release the strategy falls back to `/Performer/Album`. Dry-run mode previews tag changes and planned moves before touching the filesystem.
+
 ## Daemon installation
 
 1. Copy `systemd/audio-meta.service` to `/etc/systemd/system/audio-meta.service`.
@@ -57,6 +71,7 @@ The daemon writes logs to journald by default.
 - `audio_meta.providers.musicbrainz.MusicBrainzClient` coordinates fingerprint lookups, metadata searches, filename guesses, and release-level inference with confidence scoring.
 - `audio_meta.heuristics.PathGuess` parses folder/file names into probable artist/album/track information when embedded tags are missing.
 - `audio_meta.providers.musicbrainz.ReleaseTracker` caches release tracklists so sibling files can reuse the same MusicBrainz release metadata.
+- `audio_meta.organizer.Organizer` determines target directories (artist/album vs composer/performer/album) and moves files accordingly once tagging succeeds.
 - `audio_meta.tagging.TagWriter` coordinates reading/writing metadata using `mutagen`.
 - `audio_meta.classical.ClassicalHeuristics` provides a simple scoring mechanism that distinguishes classical repertoire and rewrites metadata accordingly.
 - `audio_meta.daemon.AudioMetaDaemon` runs the orchestrator and integrates with the CLI entry point.

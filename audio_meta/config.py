@@ -39,11 +39,25 @@ class DaemonSettings(BaseModel):
         return Path(value).expanduser()
 
 
+class OrganizerSettings(BaseModel):
+    enabled: bool = False
+    target_root: Optional[Path] = None
+    classical_mixed_strategy: str = "performer_album"
+
+    @field_validator("target_root", mode="before")
+    @classmethod
+    def _expand_target(cls, value: Optional[str | Path]) -> Optional[Path]:
+        if value is None:
+            return None
+        return Path(value).expanduser().resolve()
+
+
 class Settings(BaseModel):
     library: LibrarySettings
     providers: ProviderSettings
     classical: ClassicalSettings = ClassicalSettings()
     daemon: DaemonSettings = DaemonSettings()
+    organizer: OrganizerSettings = OrganizerSettings()
 
     @classmethod
     def load(cls, path: Path) -> "Settings":

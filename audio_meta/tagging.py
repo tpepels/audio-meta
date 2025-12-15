@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from mutagen import File
 from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TALB, TPE1, TPE2, TCON, TCOM, COMM
@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 class TagWriter:
     """Handles reading/writing metadata across the most common tagging formats."""
 
+    SUPPORTED_EXTS = {".mp3", ".flac", ".m4a"}
+
     def apply(self, meta: TrackMetadata) -> None:
         handlers = {
             ".mp3": self._apply_mp3,
@@ -29,6 +31,95 @@ class TagWriter:
             logger.debug("Skipping unsupported extension %s", meta.path)
             return
         handler(meta)
+
+    def has_changes(self, meta: TrackMetadata) -> bool:
+        ext = meta.path.suffix.lower()
+        if ext not in self.SUPPORTED_EXTS:
+            return False
+        current = self._read_tags(meta, ext)
+        if current is None:
+            return True
+        desired = self._desired_map(meta)
+        for key, expected in desired.items():
+            if self._normalize(current.get(key)) != self._normalize(expected):
+                return True
+        return False
+
+    def _desired_map(self, meta: TrackMetadata) -> Dict[str, Optional[str]]:
+        return {
+            "title": meta.title,
+            "album": meta.album,
+            "artist": meta.artist,
+            "album_artist": meta.album_artist,
+            "composer": meta.composer,
+            "genre": meta.genre,
+            "work": meta.work,
+            "movement": meta.movement,
+        }
+
+    def _read_tags(self, meta: TrackMetadata, ext: str) -> Optional[Dict[str, Optional[str]]]:
+        try:
+            if ext == ".mp3":
+                tags = ID3(meta.path)
+                return {
+                    "title": self._id3_text(tags, "TIT2"),
+                    "album": self._id3_text(tags, "TALB"),
+                    "artist": self._id3_text(tags, "TPE1"),
+                    "album_artist": self._id3_text(tags, "TPE2"),
+                    "composer": self._id3_text(tags, "TCOM"),
+                    "genre": self._id3_text(tags, "TCON"),
+                    "work": self._id3_text(tags, "TIT1"),
+                    "movement": self._id3_text(tags, "MVNM"),
+                }
+            if ext == ".flac":
+                audio = FLAC(meta.path)
+                return {
+                    "title": audio.get("TITLE", [None])[0],
+                    "album": audio.get("ALBUM", [None])[0],
+                    "artist": audio.get("ARTIST", [None])[0],
+                    "album_artist": audio.get("ALBUMARTIST", [None])[0],
+                    "composer": audio.get("COMPOSER", [None])[0],
+                    "genre": audio.get("GENRE", [None])[0],
+                    "work": audio.get("WORK", [None])[0],
+                    "movement": audio.get("MOVEMENT", [None])[0],
+                }
+            if ext == ".m4a":
+                audio = MP4(meta.path)
+                return {
+                    "title": self._mp4_text(audio, "\xa9nam"),
+                    "album": self._mp4_text(audio, "\xa9alb"),
+                    "artist": self._mp4_text(audio, "\xa9ART"),
+                    "album_artist": self._mp4_text(audio, "aART"),
+                    "composer": self._mp4_text(audio, "----:com.apple.iTunes:COMPOSER"),
+                    "genre": self._mp4_text(audio, "\xa9gen"),
+                    "work": self._mp4_text(audio, "----:com.apple.iTunes:WORK"),
+                    "movement": self._mp4_text(audio, "----:com.apple.iTunes:MOVEMENT"),
+                }
+        except Exception as exc:  # pragma: no cover - depends on local files
+            logger.debug("Failed to read tags for %s: %s", meta.path, exc)
+            return None
+        return None
+
+    def _id3_text(self, tags: ID3, frame_id: str) -> Optional[str]:
+        frame = tags.getall(frame_id)
+        if not frame:
+            return None
+        return frame[0].text[0] if frame[0].text else None
+
+    def _mp4_text(self, audio: MP4, key: str) -> Optional[str]:
+        value = audio.get(key)
+        if not value:
+            return None
+        first = value[0]
+        if isinstance(first, bytes):
+            return first.decode("utf-8", errors="replace")
+        return str(first)
+
+    @staticmethod
+    def _normalize(value: Optional[str]) -> str:
+        if value is None:
+            return ""
+        return value.strip()
 
     def _apply_mp3(self, meta: TrackMetadata) -> None:
         try:
@@ -69,6 +160,8 @@ class TagWriter:
             "aART": meta.album_artist,
             "\xa9gen": meta.genre,
             "----:com.apple.iTunes:COMPOSER": meta.composer,
+            "----:com.apple.iTunes:WORK": meta.work,
+            "----:com.apple.iTunes:MOVEMENT": meta.movement,
         }
         for key, value in mapping.items():
             if value:

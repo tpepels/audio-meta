@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import Settings, find_config
 from .daemon import AudioMetaDaemon
+from .providers.validation import validate_providers
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
@@ -31,6 +32,7 @@ def main() -> None:
     logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     config_path = find_config(args.config)
     settings = Settings.load(config_path)
+    validate_providers(settings.providers)
     daemon = AudioMetaDaemon(settings, dry_run_output=args.dry_run_output)
 
     match args.command:

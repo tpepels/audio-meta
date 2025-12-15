@@ -32,10 +32,10 @@ class ClassicalHeuristics:
             score += 0.1
         return ClassicalDecision(is_classical=score >= 0.5, score=round(score, 2))
 
-    def adapt_metadata(self, meta: TrackMetadata) -> None:
+    def adapt_metadata(self, meta: TrackMetadata) -> bool:
         decision = self.evaluate(meta)
         if not decision.is_classical:
-            return
+            return False
         if meta.composer:
             meta.album_artist = meta.album_artist or meta.artist
             meta.artist = meta.composer
@@ -45,6 +45,7 @@ class ClassicalHeuristics:
             meta.extra["PERFORMERS"] = "; ".join(meta.performers)
         if meta.conductor:
             meta.extra["CONDUCTOR"] = meta.conductor
+        return True
 
     @staticmethod
     def _match_keyword(value: str, keywords: Iterable[str]) -> bool:

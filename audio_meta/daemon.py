@@ -13,6 +13,7 @@ from watchdog.observers import Observer
 from .classical import ClassicalHeuristics
 from .config import Settings
 from .models import ProcessingError, TrackMetadata
+from .organizer import Organizer
 from .providers.musicbrainz import MusicBrainzClient
 from .scanner import LibraryScanner
 from .tagging import TagWriter
@@ -27,9 +28,11 @@ class DryRunRecorder:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("", encoding="utf-8")
 
-    def record(self, meta: TrackMetadata, score: Optional[float]) -> None:
+    def record(self, meta: TrackMetadata, score: Optional[float], target_path: Optional[Path] = None) -> None:
         payload = meta.to_record()
         payload["match_score"] = score
+        if target_path:
+            payload["relocate_to"] = str(target_path)
         line = json.dumps(payload)
         with self._lock:
             with self.output_path.open("a", encoding="utf-8") as handle:
@@ -64,6 +67,7 @@ class AudioMetaDaemon:
         self.musicbrainz = MusicBrainzClient(settings.providers)
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
+        self.organizer = Organizer(settings.organizer, settings.library)
         self.queue: asyncio.Queue[Path] = asyncio.Queue()
         self.observer: Observer | None = None
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
@@ -128,13 +132,25 @@ class AudioMetaDaemon:
         if not result:
             logger.info("No metadata match for %s", path)
             return
-        self.heuristics.adapt_metadata(meta)
+        is_classical = self.heuristics.adapt_metadata(meta)
+        needs_tags = self.tag_writer.has_changes(meta)
+        target_path = self.organizer.plan_target(meta, is_classical)
         if self.dry_run_recorder:
-            self.dry_run_recorder.record(meta, result.score)
-            logger.info("Dry-run recorded planned update for %s", path)
+            if needs_tags or target_path:
+                self.dry_run_recorder.record(meta, result.score, target_path)
+                logger.info("Dry-run recorded planned update for %s", path)
+                if target_path:
+                    self.organizer.move(meta, target_path, dry_run=True)
+            else:
+                logger.info("No changes required for %s", path)
             return
         try:
-            self.tag_writer.apply(meta)
-            logger.info("Updated tags for %s", path)
+            if needs_tags:
+                self.tag_writer.apply(meta)
+                logger.info("Updated tags for %s", path)
+            else:
+                logger.info("Tags already up to date for %s", path)
+            if target_path:
+                self.organizer.move(meta, target_path, dry_run=False)
         except ProcessingError as exc:
             logger.warning("Failed to update tags for %s: %s", path, exc)
