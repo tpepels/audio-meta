@@ -190,7 +190,7 @@ class MusicBrainzClient:
             if result:
                 meta.match_confidence = result.score
                 self._after_match(meta)
-                logger.info(
+                logger.debug(
                     "Metadata fallback matched %s via %s - %s",
                     meta.path,
                     tags.get("artist"),
@@ -209,7 +209,7 @@ class MusicBrainzClient:
         if guess_result:
             meta.match_confidence = guess_result.score
             self._after_match(meta)
-            logger.info("Guessed metadata matched %s via filename inference", meta.path)
+            logger.debug("Guessed metadata matched %s via filename inference", meta.path)
             return guess_result
 
         release_match = self.release_tracker.match(meta.path.parent, guess, meta.duration_seconds)
@@ -229,7 +229,7 @@ class MusicBrainzClient:
                 score = release_match.confidence
                 meta.match_confidence = max(meta.match_confidence or 0.0, score)
                 self._after_match(meta)
-                logger.info(
+                logger.debug(
                     "Release memory matched %s as track %s of release %s",
                     meta.path,
                     release_match.track.title,
@@ -275,7 +275,7 @@ class MusicBrainzClient:
                 album_hint=album_hint or dir_release_title,
             )
             meta.acoustid_id = recording_id
-            logger.info("Fingerprint matched %s (recording %s score %.2f)", meta.path, recording_id, score)
+            logger.debug("Fingerprint matched %s (recording %s score %.2f)", meta.path, recording_id, score)
             self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
             return LookupResult(meta, score=score)
         return None
