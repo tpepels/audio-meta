@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class LibrarySettings(BaseModel):
@@ -12,7 +12,8 @@ class LibrarySettings(BaseModel):
     include_extensions: List[str] = Field(default_factory=lambda: [".mp3", ".flac", ".m4a", ".ogg"])
     exclude_patterns: List[str] = Field(default_factory=list)
 
-    @validator("roots", pre=True)
+    @field_validator("roots", mode="before")
+    @classmethod
     def _expand_roots(cls, values: List[str]) -> List[Path]:
         return [Path(v).expanduser().resolve() for v in values]
 
@@ -32,7 +33,8 @@ class DaemonSettings(BaseModel):
     worker_concurrency: int = 4
     cache_path: Path = Path("~/.cache/audio-meta/cache.sqlite3")
 
-    @validator("cache_path", pre=True)
+    @field_validator("cache_path", mode="before")
+    @classmethod
     def _expand_cache(cls, value: str | Path) -> Path:
         return Path(value).expanduser()
 
