@@ -11,6 +11,7 @@ class TrackMetadata:
     fingerprint: Optional[str] = None
     acoustid_id: Optional[str] = None
     musicbrainz_track_id: Optional[str] = None
+    musicbrainz_release_id: Optional[str] = None
     title: Optional[str] = None
     album: Optional[str] = None
     artist: Optional[str] = None
@@ -23,6 +24,7 @@ class TrackMetadata:
     genre: Optional[str] = None
     duration_seconds: Optional[int] = None
     extra: Dict[str, str] = field(default_factory=dict)
+    match_confidence: Optional[float] = None
 
     def to_record(self) -> Dict[str, object]:
         return {
@@ -30,6 +32,7 @@ class TrackMetadata:
             "fingerprint": self.fingerprint,
             "acoustid_id": self.acoustid_id,
             "musicbrainz_track_id": self.musicbrainz_track_id,
+            "musicbrainz_release_id": self.musicbrainz_release_id,
             "title": self.title,
             "album": self.album,
             "artist": self.artist,
@@ -42,6 +45,7 @@ class TrackMetadata:
             "genre": self.genre,
             "duration_seconds": self.duration_seconds,
             "extra": dict(self.extra),
+            "match_confidence": self.match_confidence,
         }
 
 

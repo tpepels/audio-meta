@@ -9,6 +9,7 @@ Audio metadata correction daemon for Linux libraries. The tool walks a directory
 - Normalisation pipeline that focuses on canonical artist, album artist, composer, performers, and work/movement metadata for classical music.
 - Watchdog-powered daemon mode that sits in the background and processes new or modified files immediately.
 - YAML configuration with per-directory overrides and rewrite rules for power users.
+- Filename heuristics plus release-level memory so that once a single track in an album matches MusicBrainz, the remaining tracks inherit consistent metadata even without fingerprints.
 
 ## Requirements
 
@@ -53,7 +54,9 @@ The daemon writes logs to journald by default.
 
 - `audio_meta.config.Settings` loads YAML configuration, validates directories, and exposes API keys.
 - `audio_meta.scanner.LibraryScanner` walks the filesystem and enqueues work for the processor.
-- `audio_meta.providers.musicbrainz.MusicBrainzClient` encapsulates network calls and rate limiting.
+- `audio_meta.providers.musicbrainz.MusicBrainzClient` coordinates fingerprint lookups, metadata searches, filename guesses, and release-level inference with confidence scoring.
+- `audio_meta.heuristics.PathGuess` parses folder/file names into probable artist/album/track information when embedded tags are missing.
+- `audio_meta.providers.musicbrainz.ReleaseTracker` caches release tracklists so sibling files can reuse the same MusicBrainz release metadata.
 - `audio_meta.tagging.TagWriter` coordinates reading/writing metadata using `mutagen`.
 - `audio_meta.classical.ClassicalHeuristics` provides a simple scoring mechanism that distinguishes classical repertoire and rewrites metadata accordingly.
 - `audio_meta.daemon.AudioMetaDaemon` runs the orchestrator and integrates with the CLI entry point.
