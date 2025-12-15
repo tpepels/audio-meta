@@ -369,7 +369,7 @@ class MusicBrainzClient:
                 meta.performers.append(name)
 
     def _select_release(self, recording: dict, preferred_release_id: Optional[str]) -> dict:
-        release_list = recording.get("releases", [])
+        release_list = recording.get("release-list") or recording.get("releases") or []
         if preferred_release_id:
             for release in release_list:
                 if release.get("id") == preferred_release_id:
@@ -461,7 +461,7 @@ class MusicBrainzClient:
         return int(digits) if digits else None
 
     def _extract_release(self, search_recording: dict, recording: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        for candidate in recording.get("releases", []):
+        for candidate in (recording.get("release-list") or recording.get("releases") or []):
             if candidate.get("id"):
                 return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
         for candidate in search_recording.get("release-list", []):

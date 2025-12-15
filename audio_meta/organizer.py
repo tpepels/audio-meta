@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 
 from .config import LibrarySettings, OrganizerSettings
+from .heuristics import guess_metadata_from_path
 from .models import TrackMetadata
 
 logger = logging.getLogger(__name__)
@@ -52,13 +53,13 @@ class Organizer:
         if is_classical:
             return self._classical_directory(meta)
         artist = self._safe(meta.album_artist or meta.artist, UNKNOWN_ARTIST)
-        album = self._safe(meta.album, UNKNOWN_ALBUM)
+        album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
         return self.target_root / artist / album
 
     def _classical_directory(self, meta: TrackMetadata) -> Optional[Path]:
         composer = self._safe(meta.composer, UNKNOWN_ARTIST)
         performer = self._safe(meta.album_artist or meta.artist, UNKNOWN_ARTIST)
-        album = self._safe(meta.album, UNKNOWN_ALBUM)
+        album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
         if composer:
             release_key = self._release_key(meta)
             composers = self.release_composers[release_key]
@@ -71,7 +72,7 @@ class Organizer:
     def _release_key(self, meta: TrackMetadata) -> str:
         if meta.musicbrainz_release_id:
             return meta.musicbrainz_release_id
-        album = self._safe(meta.album, UNKNOWN_ALBUM)
+        album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
         artist = self._safe(meta.album_artist or meta.artist, UNKNOWN_ARTIST)
         return f"{artist}|{album}"
 
@@ -82,3 +83,7 @@ class Organizer:
         cleaned = value.strip()
         cleaned = re.sub(r"[\\/]+", "-", cleaned)
         return cleaned or fallback
+
+    def _guess_album(self, meta: TrackMetadata) -> Optional[str]:
+        guess = guess_metadata_from_path(meta.path)
+        return guess.album
