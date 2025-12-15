@@ -37,8 +37,16 @@ class ClassicalHeuristics:
         if not decision.is_classical:
             return False
         if meta.composer:
-            meta.album_artist = meta.album_artist or meta.artist
-            meta.artist = meta.composer
+            original_artist = meta.artist
+            meta.album_artist = meta.composer
+            performer_names = []
+            if meta.conductor:
+                performer_names.append(meta.conductor)
+            if meta.performers:
+                performer_names.extend(meta.performers)
+            if not performer_names:
+                performer_names.append(original_artist or meta.composer)
+            meta.artist = "; ".join(performer_names)
         if meta.work and meta.title and meta.work not in meta.title:
             meta.title = f"{meta.work}: {meta.title}"
         if meta.performers:

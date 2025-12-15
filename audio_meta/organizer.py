@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Optional, Set
+import unicodedata
 
 from .config import LibrarySettings, OrganizerSettings
 from .heuristics import guess_metadata_from_path
@@ -30,7 +31,8 @@ class Organizer:
         target_dir = self._build_directory(meta, is_classical)
         if not target_dir:
             return None
-        target = target_dir / meta.path.name
+        target_filename = self._build_filename(meta)
+        target = target_dir / target_filename
         if target == meta.path:
             return None
         return target
@@ -48,6 +50,20 @@ class Organizer:
             meta.path = target
         except OSError as exc:
             logger.warning("Failed to move %s -> %s: %s", meta.path, target, exc)
+
+    def _build_filename(self, meta: TrackMetadata) -> str:
+        title = meta.title
+        trackno = None
+        tags = meta.extra.get("TRACKNUMBER")
+        if tags:
+            trackno = tags
+        guess = guess_metadata_from_path(meta.path)
+        if guess.track_number and not trackno:
+            trackno = guess.track_number
+        base_title = self._safe(title or guess.title or meta.path.stem, "Unknown Title")
+        if trackno:
+            return f"{trackno:02d} - {base_title}{meta.path.suffix}"
+        return f"{base_title}{meta.path.suffix}"
 
     def _build_directory(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if is_classical:
@@ -81,6 +97,7 @@ class Organizer:
         if not value:
             return fallback
         cleaned = value.strip()
+        cleaned = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii")
         cleaned = re.sub(r"[\\/]+", "-", cleaned)
         return cleaned or fallback
 
