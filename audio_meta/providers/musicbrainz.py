@@ -329,7 +329,16 @@ class MusicBrainzClient:
     def _first_artist(self, entity: dict) -> Optional[str]:
         credits = entity.get("artist-credit", [])
         if credits:
-            names = [c["name"] for c in credits if isinstance(c, dict) and "name" in c]
+            names: List[str] = []
+            for credit in credits:
+                if isinstance(credit, str):
+                    if credit.strip():
+                        names.append(credit.strip())
+                elif isinstance(credit, dict):
+                    if "name" in credit:
+                        names.append(credit["name"])
+                    elif isinstance(credit.get("artist"), dict) and credit["artist"].get("name"):
+                        names.append(credit["artist"]["name"])
             return ", ".join(names) if names else None
         artists = entity.get("artist-list", [])
         if artists:
