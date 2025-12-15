@@ -29,11 +29,11 @@ class MusicBrainzClient:
         )
 
     def enrich(self, meta: TrackMetadata) -> Optional[LookupResult]:
-        fingerprint, duration = self._fingerprint(meta)
+        duration, fingerprint = self._fingerprint(meta)
         if not fingerprint:
             return None
-        meta.fingerprint = fingerprint
         meta.duration_seconds = duration
+        meta.fingerprint = fingerprint
         acoustic_matches = acoustid.lookup(
             self.settings.acoustid_api_key,
             fingerprint,
@@ -53,10 +53,10 @@ class MusicBrainzClient:
             return LookupResult(meta, score=score)
         return None
 
-    def _fingerprint(self, meta: TrackMetadata) -> tuple[Optional[str], Optional[int]]:
+    def _fingerprint(self, meta: TrackMetadata) -> tuple[Optional[int], Optional[str]]:
         try:
-            fingerprint, duration = acoustid.fingerprint_file(str(meta.path))
-            return fingerprint, duration
+            duration, fingerprint = acoustid.fingerprint_file(str(meta.path))
+            return duration, fingerprint
         except acoustid.FingerprintGenerationError as exc:
             logger.error("Fingerprint failed for %s: %s", meta.path, exc)
             return None, None
