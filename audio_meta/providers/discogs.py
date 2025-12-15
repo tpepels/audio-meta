@@ -13,16 +13,18 @@ from ..config import ProviderSettings
 from ..heuristics import PathGuess, guess_metadata_from_path
 from ..models import TrackMetadata
 from .musicbrainz import LookupResult
+from ..cache import MetadataCache
 
 logger = logging.getLogger(__name__)
 
 
 class DiscogsClient:
-    def __init__(self, settings: ProviderSettings) -> None:
+    def __init__(self, settings: ProviderSettings, cache: Optional[MetadataCache] = None) -> None:
         if not settings.discogs_token:
             raise ValueError("Discogs token required")
         self.token = settings.discogs_token
         self.useragent = settings.discogs_useragent
+        self.cache = cache
 
     def supplement(self, meta: TrackMetadata) -> Optional[LookupResult]:
         """Fill missing fields without overwriting existing values."""
@@ -68,15 +70,31 @@ class DiscogsClient:
         if title:
             params["track"] = title
         url = f"https://api.discogs.com/database/search?{urllib.parse.urlencode(params)}"
+        cache_key = self._search_cache_key(artist, album, title)
+        cached = self.cache.get_discogs_search(cache_key) if self.cache else None
+        if cached is not None:
+            return cached or None
         data = self._request(url)
         if not data:
+            if self.cache:
+                self.cache.set_discogs_search(cache_key, None)
             return None
         results = data.get("results", [])
-        return results[0] if results else None
+        best = results[0] if results else None
+        if self.cache:
+            self.cache.set_discogs_search(cache_key, best)
+        return best
 
     def _fetch_release(self, release_id: int) -> Optional[dict]:
+        if self.cache:
+            cached = self.cache.get_discogs_release(release_id)
+            if cached:
+                return cached
         url = f"https://api.discogs.com/releases/{release_id}?token={self.token}"
-        return self._request(url)
+        data = self._request(url)
+        if data and self.cache:
+            self.cache.set_discogs_release(release_id, data)
+        return data
 
     def _match_track(
         self,
@@ -200,3 +218,14 @@ class DiscogsClient:
             return None
         length = getattr(audio.info, "length", None)
         return int(length) if length else None
+
+    def _search_cache_key(
+        self,
+        artist: Optional[str],
+        album: Optional[str],
+        title: Optional[str],
+    ) -> str:
+        def normalize(value: Optional[str]) -> str:
+            return (value or "").strip().lower()
+
+        return "|".join([normalize(artist), normalize(album), normalize(title)])

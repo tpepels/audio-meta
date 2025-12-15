@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+import difflib
 
 import acoustid
 import musicbrainzngs
@@ -12,6 +13,7 @@ from mutagen import File as MutagenFile
 from ..config import ProviderSettings
 from ..heuristics import PathGuess, guess_metadata_from_path
 from ..models import TrackMetadata
+from ..cache import MetadataCache
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +123,9 @@ class ReleaseTracker:
         return ReleaseMatch(release=release, track=track, confidence=confidence)
 
 class MusicBrainzClient:
-    def __init__(self, settings: ProviderSettings) -> None:
+    def __init__(self, settings: ProviderSettings, cache: Optional[MetadataCache] = None) -> None:
         self.settings = settings
+        self.cache = cache
         self.release_tracker = ReleaseTracker()
         musicbrainzngs.set_useragent(
             "audio-meta",
@@ -178,6 +181,7 @@ class MusicBrainzClient:
                     preferred_release_id=release_match.release.release_id,
                     release_hint_title=release_match.release.album_title,
                     release_hint_artist=release_match.release.album_artist,
+                    album_hint=release_match.release.album_title,
                 )
                 score = release_match.confidence
                 meta.match_confidence = max(meta.match_confidence or 0.0, score)
@@ -192,6 +196,8 @@ class MusicBrainzClient:
         return None
 
     def _lookup_by_fingerprint(self, meta: TrackMetadata, duration: int, fingerprint: str) -> Optional[LookupResult]:
+        tags = self._read_basic_tags(meta.path)
+        album_hint = self._album_hint(meta, tags)
         try:
             acoustic_matches = acoustid.lookup(
                 self.settings.acoustid_api_key,
@@ -205,7 +211,7 @@ class MusicBrainzClient:
             recording = self._fetch_recording(recording_id, meta.path)
             if not recording:
                 continue
-            self._apply_recording(meta, recording, title, artist)
+            self._apply_recording(meta, recording, title, artist, album_hint=album_hint)
             meta.acoustid_id = recording_id
             logger.info("Fingerprint matched %s (recording %s score %.2f)", meta.path, recording_id, score)
             return LookupResult(meta, score=score)
@@ -234,7 +240,8 @@ class MusicBrainzClient:
         recording = self._fetch_recording(best["id"], meta.path)
         if not recording:
             return None
-        release_id, release_title, release_artist = self._extract_release(best, recording)
+        album_hint = self._album_hint(meta, tags)
+        release_id, release_title, release_artist = self._extract_release(best, recording, album_hint=album_hint)
         fallback_album = tags.get("album")
         fallback_artist = tags.get("album_artist") or tags.get("artist")
         self._apply_recording(
@@ -245,6 +252,7 @@ class MusicBrainzClient:
             preferred_release_id=release_id,
             release_hint_title=release_title or fallback_album,
             release_hint_artist=release_artist or fallback_artist,
+            album_hint=album_hint or release_title or fallback_album,
         )
         if not meta.album and fallback_album:
             meta.album = fallback_album
@@ -274,9 +282,37 @@ class MusicBrainzClient:
         recording = self._fetch_recording(best["id"], meta.path)
         if not recording:
             return None
-        self._apply_recording(meta, recording, best.get("title"), self._first_artist(recording))
+        album_hint = guess.album or self._album_hint(meta)
+        self._apply_recording(
+            meta,
+            recording,
+            best.get("title"),
+            self._first_artist(recording),
+            album_hint=album_hint,
+        )
         score = float(best.get("ext-score", 0)) / 100.0 or guess.confidence()
         return LookupResult(meta, score=score)
+
+    def _album_hint(self, meta: TrackMetadata, tags: Optional[dict[str, Optional[str]]] = None) -> Optional[str]:
+        hints: List[str] = []
+        if meta.album:
+            hints.append(meta.album)
+        if tags:
+            album_tag = tags.get("album")
+            if album_tag:
+                hints.append(album_tag)
+        guess = guess_metadata_from_path(meta.path)
+        if guess.album:
+            hints.append(guess.album)
+        parent = meta.path.parent.name
+        if parent:
+            hints.append(parent)
+        for value in hints:
+            if value:
+                cleaned = value.strip()
+                if cleaned:
+                    return cleaned
+        return None
 
     def _fingerprint(self, meta: TrackMetadata) -> tuple[Optional[int], Optional[str]]:
         try:
@@ -316,17 +352,18 @@ class MusicBrainzClient:
         preferred_release_id: Optional[str] = None,
         release_hint_title: Optional[str] = None,
         release_hint_artist: Optional[str] = None,
+        album_hint: Optional[str] = None,
     ) -> None:
-        release = self._select_release(recording, preferred_release_id)
+        release = self._select_release(recording, preferred_release_id, album_hint)
         if not release and (preferred_release_id or release_hint_title):
             release = {
                 "id": preferred_release_id,
-                "title": release_hint_title,
+                "title": release_hint_title or album_hint,
                 "artist-credit": [{"name": release_hint_artist}] if release_hint_artist else [],
             }
         meta.title = title or recording.get("title")
         meta.artist = artist or self._first_artist(recording)
-        meta.album = release.get("title")
+        meta.album = release.get("title") if isinstance(release, dict) else meta.album
         meta.album_artist = self._first_artist(release) or meta.artist
         meta.musicbrainz_track_id = recording.get("id")
         meta.musicbrainz_release_id = release.get("id") if isinstance(release, dict) else meta.musicbrainz_release_id
@@ -368,25 +405,66 @@ class MusicBrainzClient:
             elif role in {"performer", "instrumentalist", "orchestra"}:
                 meta.performers.append(name)
 
-    def _select_release(self, recording: dict, preferred_release_id: Optional[str]) -> dict:
+    def _select_release(
+        self,
+        recording: dict,
+        preferred_release_id: Optional[str],
+        album_hint: Optional[str],
+    ) -> dict:
         release_list = recording.get("release-list") or recording.get("releases") or []
         if preferred_release_id:
             for release in release_list:
                 if release.get("id") == preferred_release_id:
                     return release
-        return release_list[0] if release_list else {}
+        candidate = self._choose_release_candidate(release_list, album_hint)
+        return candidate or {}
+
+    def _choose_release_candidate(
+        self,
+        releases: List[dict],
+        album_hint: Optional[str],
+    ) -> Optional[dict]:
+        if not releases:
+            return None
+        if album_hint:
+            best_release = None
+            best_score = 0.0
+            for release in releases:
+                score = self._title_similarity(album_hint, release.get("title"))
+                if score > best_score:
+                    best_release = release
+                    best_score = score
+            if best_release and best_score >= 0.45:
+                return best_release
+        return releases[0]
+
+    def _title_similarity(self, first: Optional[str], second: Optional[str]) -> float:
+        if not first or not second:
+            return 0.0
+        return difflib.SequenceMatcher(None, first.lower(), second.lower()).ratio()
 
     def _fetch_recording(self, recording_id: str, path) -> Optional[dict]:
         try:
-            return musicbrainzngs.get_recording_by_id(
+            if self.cache:
+                cached = self.cache.get_recording(recording_id)
+                if cached:
+                    return cached
+            recording = musicbrainzngs.get_recording_by_id(
                 recording_id,
                 includes=["artists", "releases", "work-rels", "artist-credits"],
             )["recording"]
+            if self.cache:
+                self.cache.set_recording(recording_id, recording)
+            return recording
         except musicbrainzngs.ResponseError as exc:
             logger.warning("MusicBrainz error for %s (%s): %s", path, recording_id, exc)
             return None
 
     def _fetch_release_tracks(self, release_id: str) -> Optional[ReleaseData]:
+        if self.cache:
+            cached = self.cache.get_release(release_id)
+            if cached:
+                return self._build_release_data(cached)
         try:
             release = musicbrainzngs.get_release_by_id(
                 release_id,
@@ -395,6 +473,14 @@ class MusicBrainzClient:
         except musicbrainzngs.ResponseError as exc:
             logger.debug("Failed to load release %s: %s", release_id, exc)
             return None
+        if self.cache:
+            self.cache.set_release(release_id, release)
+        return self._build_release_data(release)
+
+    def _build_release_data(self, release: dict) -> ReleaseData:
+        release_id = release.get("id")
+        if not release_id:
+            raise ValueError("release payload missing id")
         data = ReleaseData(release_id, release.get("title"), self._first_artist(release))
         for medium in release.get("medium-list", []):
             for track in medium.get("track-list", []):
@@ -460,11 +546,17 @@ class MusicBrainzClient:
         digits = "".join(ch for ch in value if ch.isdigit())
         return int(digits) if digits else None
 
-    def _extract_release(self, search_recording: dict, recording: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        for candidate in (recording.get("release-list") or recording.get("releases") or []):
-            if candidate.get("id"):
-                return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
-        for candidate in search_recording.get("release-list", []):
-            if candidate.get("id"):
-                return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
+    def _extract_release(
+        self,
+        search_recording: dict,
+        recording: dict,
+        album_hint: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        release_list = recording.get("release-list") or recording.get("releases") or []
+        candidate = self._choose_release_candidate(release_list, album_hint)
+        if candidate and candidate.get("id"):
+            return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
+        candidate = self._choose_release_candidate(search_recording.get("release-list", []), album_hint)
+        if candidate and candidate.get("id"):
+            return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
         return None, None, None

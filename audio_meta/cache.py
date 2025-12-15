@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from threading import Lock
+from typing import Any, Optional
+
+
+class MetadataCache:
+    """Simple SQLite-backed cache for expensive provider lookups."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = Lock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cache (
+                namespace TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY(namespace, key)
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_files (
+                path TEXT PRIMARY KEY,
+                mtime_ns INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL
+            )
+            """
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def get_recording(self, recording_id: str) -> Optional[dict]:
+        return self._get("recording", recording_id)
+
+    def set_recording(self, recording_id: str, value: dict) -> None:
+        self._set("recording", recording_id, value)
+
+    def get_release(self, release_id: str) -> Optional[dict]:
+        return self._get("release", release_id)
+
+    def set_release(self, release_id: str, value: dict) -> None:
+        self._set("release", release_id, value)
+
+    def get_discogs_release(self, release_id: str | int) -> Optional[dict]:
+        return self._get("discogs_release", str(release_id))
+
+    def set_discogs_release(self, release_id: str | int, value: dict) -> None:
+        self._set("discogs_release", str(release_id), value)
+
+    def get_discogs_search(self, key: str) -> Optional[dict]:
+        return self._get("discogs_search", key)
+
+    def set_discogs_search(self, key: str, value: Optional[dict]) -> None:
+        payload = value or {}
+        self._set("discogs_search", key, payload)
+
+    def get_processed_file(self, path: Path) -> Optional[tuple[int, int]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT mtime_ns, size_bytes FROM processed_files WHERE path = ?",
+                (str(path),),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return int(row[0]), int(row[1])
+
+    def set_processed_file(self, path: Path, mtime_ns: int, size_bytes: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO processed_files(path, mtime_ns, size_bytes)
+                VALUES(?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns, size_bytes=excluded.size_bytes
+                """,
+                (str(path), int(mtime_ns), int(size_bytes)),
+            )
+            self._conn.commit()
+
+    def _get(self, namespace: str, key: str) -> Optional[dict]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT value FROM cache WHERE namespace = ? AND key = ?", (namespace, key)
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return None
+
+    def _set(self, namespace: str, key: str, value: Any) -> None:
+        payload = json.dumps(value)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO cache(namespace, key, value)
+                VALUES(?, ?, ?)
+                ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value
+                """,
+                (namespace, key, payload),
+            )
+            self._conn.commit()

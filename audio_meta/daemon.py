@@ -18,6 +18,7 @@ from .providers.discogs import DiscogsClient
 from .providers.musicbrainz import LookupResult, MusicBrainzClient
 from .scanner import LibraryScanner
 from .tagging import TagWriter
+from .cache import MetadataCache
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +75,13 @@ class _WatchHandler(FileSystemEventHandler):
 class AudioMetaDaemon:
     def __init__(self, settings: Settings, dry_run_output: Optional[Path] = None) -> None:
         self.settings = settings
+        self.cache = MetadataCache(settings.daemon.cache_path)
         self.scanner = LibraryScanner(settings.library)
-        self.musicbrainz = MusicBrainzClient(settings.providers)
+        self.musicbrainz = MusicBrainzClient(settings.providers, cache=self.cache)
         self.discogs = None
         if settings.providers.discogs_token:
             try:
-                self.discogs = DiscogsClient(settings.providers)
+                self.discogs = DiscogsClient(settings.providers, cache=self.cache)
             except Exception as exc:
                 logger.warning("Failed to initialise Discogs client: %s", exc)
         self.heuristics = ClassicalHeuristics(settings.classical)
@@ -145,6 +147,13 @@ class AudioMetaDaemon:
 
     def _process_path(self, path: Path) -> None:
         meta = TrackMetadata(path=path)
+        if not self.dry_run_recorder:
+            stat_before = self._safe_stat(path)
+            if stat_before:
+                cached_state = self.cache.get_processed_file(path)
+                if cached_state and cached_state == (stat_before.st_mtime_ns, stat_before.st_size):
+                    logger.info("Skipping %s; already processed and unchanged", path)
+                    return
         result = self.musicbrainz.enrich(meta)
         if result and self.discogs and self._needs_supplement(meta):
             try:
@@ -181,6 +190,7 @@ class AudioMetaDaemon:
             else:
                 logger.info("No changes required for %s", path)
             return
+        processing_done = False
         try:
             if needs_tags:
                 self.tag_writer.apply(meta)
@@ -189,8 +199,20 @@ class AudioMetaDaemon:
                 logger.info("Tags already up to date for %s", path)
             if target_path:
                 self.organizer.move(meta, target_path, dry_run=False)
+            processing_done = True
         except ProcessingError as exc:
             logger.warning("Failed to update tags for %s: %s", path, exc)
+        if processing_done and not self.dry_run_recorder:
+            stat_after = self._safe_stat(meta.path)
+            if stat_after:
+                self.cache.set_processed_file(meta.path, stat_after.st_mtime_ns, stat_after.st_size)
 
     def _needs_supplement(self, meta: TrackMetadata) -> bool:
         return not meta.album or not meta.artist or not meta.album_artist
+
+    @staticmethod
+    def _safe_stat(path: Path):
+        try:
+            return path.stat()
+        except FileNotFoundError:
+            return None
