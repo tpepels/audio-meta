@@ -73,6 +73,7 @@ class DiscogsClient:
         cache_key = self._search_cache_key(artist, album, title)
         cached = self.cache.get_discogs_search(cache_key) if self.cache else None
         if cached is not None:
+            logger.debug("Discogs cache hit for search %s", cache_key)
             return cached or None
         data = self._request(url)
         if not data:
@@ -82,6 +83,7 @@ class DiscogsClient:
         results = data.get("results", [])
         best = results[0] if results else None
         if self.cache:
+            logger.debug("Discogs cache miss; storing search %s", cache_key)
             self.cache.set_discogs_search(cache_key, best)
         return best
 
@@ -89,10 +91,12 @@ class DiscogsClient:
         if self.cache:
             cached = self.cache.get_discogs_release(release_id)
             if cached:
+                logger.debug("Discogs cache hit for release %s", release_id)
                 return cached
         url = f"https://api.discogs.com/releases/{release_id}?token={self.token}"
         data = self._request(url)
         if data and self.cache:
+            logger.debug("Discogs cache miss; storing release %s", release_id)
             self.cache.set_discogs_release(release_id, data)
         return data
 

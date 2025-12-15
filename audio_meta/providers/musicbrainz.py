@@ -448,6 +448,7 @@ class MusicBrainzClient:
             if self.cache:
                 cached = self.cache.get_recording(recording_id)
                 if cached:
+                    logger.debug("MusicBrainz cache hit for recording %s", recording_id)
                     return cached
             recording = musicbrainzngs.get_recording_by_id(
                 recording_id,
@@ -464,6 +465,7 @@ class MusicBrainzClient:
         if self.cache:
             cached = self.cache.get_release(release_id)
             if cached:
+                logger.debug("MusicBrainz cache hit for release %s", release_id)
                 return self._build_release_data(cached)
         try:
             release = musicbrainzngs.get_release_by_id(
