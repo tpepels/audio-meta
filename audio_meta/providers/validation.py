@@ -32,11 +32,10 @@ def _validate_acoustid(api_key: str) -> None:
     params = urllib.parse.urlencode(
         {
             "client": api_key,
-            "duration": 1,
-            "fingerprint": "AQAAAAAA",
+            "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da",
         }
     )
-    url = f"https://api.acoustid.org/v2/lookup?{params}"
+    url = f"https://api.acoustid.org/v2/track/list_by_mbid?{params}"
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
             payload = json.load(response)
