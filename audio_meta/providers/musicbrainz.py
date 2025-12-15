@@ -234,7 +234,16 @@ class MusicBrainzClient:
         recording = self._fetch_recording(best["id"], meta.path)
         if not recording:
             return None
-        self._apply_recording(meta, recording, best.get("title"), self._first_artist(recording))
+        release_id, release_title, release_artist = self._extract_release(best, recording)
+        self._apply_recording(
+            meta,
+            recording,
+            best.get("title"),
+            self._first_artist(recording),
+            preferred_release_id=release_id,
+            release_hint_title=release_title,
+            release_hint_artist=release_artist,
+        )
         score = float(best.get("ext-score", 0)) / 100.0
         meta.musicbrainz_track_id = best["id"]
         return LookupResult(meta, score=score)
@@ -393,6 +402,12 @@ class MusicBrainzClient:
             self._fetch_release_tracks,
             matched_recording_id=meta.musicbrainz_track_id,
         )
+        release = self.release_tracker.releases.get(release_id)
+        if release:
+            if not meta.album:
+                meta.album = release.album_title
+            if not meta.album_artist:
+                meta.album_artist = release.album_artist
 
     def _read_basic_tags(self, path) -> dict[str, Optional[str]]:
         try:
@@ -424,3 +439,12 @@ class MusicBrainzClient:
             return None
         digits = "".join(ch for ch in value if ch.isdigit())
         return int(digits) if digits else None
+
+    def _extract_release(self, search_recording: dict, recording: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        for candidate in recording.get("releases", []):
+            if candidate.get("id"):
+                return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
+        for candidate in search_recording.get("release-list", []):
+            if candidate.get("id"):
+                return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
+        return None, None, None
