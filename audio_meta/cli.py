@@ -27,6 +27,8 @@ def main() -> None:
 
     args = parser.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format=LOG_FORMAT)
+    logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     config_path = find_config(args.config)
     settings = Settings.load(config_path)
     daemon = AudioMetaDaemon(settings, dry_run_output=args.dry_run_output)
