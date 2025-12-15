@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List, Optional
+
+import yaml
+from pydantic import BaseModel, Field, validator
+
+
+class LibrarySettings(BaseModel):
+    roots: List[Path]
+    include_extensions: List[str] = Field(default_factory=lambda: [".mp3", ".flac", ".m4a", ".ogg"])
+    exclude_patterns: List[str] = Field(default_factory=list)
+
+    @validator("roots", pre=True)
+    def _expand_roots(cls, values: List[str]) -> List[Path]:
+        return [Path(v).expanduser().resolve() for v in values]
+
+
+class ClassicalSettings(BaseModel):
+    genre_keywords: List[str] = Field(default_factory=lambda: ["classical", "baroque", "romantic"])
+    title_markers: List[str] = Field(default_factory=lambda: ["symphony", "concerto", "sonata", "suite"])
+    min_duration_seconds: int = 540
+
+
+class ProviderSettings(BaseModel):
+    acoustid_api_key: str
+    musicbrainz_useragent: str = "audio-meta/0.1 (unknown@example.com)"
+
+
+class DaemonSettings(BaseModel):
+    worker_concurrency: int = 4
+    cache_path: Path = Path("~/.cache/audio-meta/cache.sqlite3")
+
+    @validator("cache_path", pre=True)
+    def _expand_cache(cls, value: str | Path) -> Path:
+        return Path(value).expanduser()
+
+
+class Settings(BaseModel):
+    library: LibrarySettings
+    providers: ProviderSettings
+    classical: ClassicalSettings = ClassicalSettings()
+    daemon: DaemonSettings = DaemonSettings()
+
+    @classmethod
+    def load(cls, path: Path) -> "Settings":
+        with path.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+        return cls.model_validate(raw)
+
+
+def find_config(explicit_path: Optional[Path]) -> Path:
+    if explicit_path:
+        return explicit_path
+    cwd = Path.cwd()
+    for candidate in (cwd / "config.yaml", cwd / "config.yml"):
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError("Could not find config.yaml – pass --config explicitly.")

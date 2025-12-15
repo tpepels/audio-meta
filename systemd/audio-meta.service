@@ -1,0 +1,17 @@
+[Unit]
+Description=Audio metadata correction daemon
+After=network.target
+
+[Service]
+Type=simple
+User=tom
+Group=tom
+WorkingDirectory=/opt/audio-meta
+ExecStart=/opt/audio-meta/venv/bin/python -m audio_meta.cli --config /etc/audio-meta/config.yaml --log-level INFO daemon
+Restart=on-failure
+RestartSec=10
+StateDirectory=audio-meta
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

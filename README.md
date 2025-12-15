@@ -1,0 +1,68 @@
+# audio-meta
+
+Audio metadata correction daemon for Linux libraries. The tool walks a directory tree, fingerprints audio files, attempts to fetch canonical metadata from MusicBrainz, rewrites ID3/FLAC/Vorbis tags, and applies additional heuristics for classical works. It can run as a one-off scanner or as a daemon that keeps a library tidy while new tracks arrive.
+
+## Features
+
+- Recursive library scanning with caching to avoid repeatedly processing the same file.
+- Uses [Chromaprint](https://acoustid.org/chromaprint) fingerprints via `pyacoustid` to match files against MusicBrainz releases.
+- Normalisation pipeline that focuses on canonical artist, album artist, composer, performers, and work/movement metadata for classical music.
+- Watchdog-powered daemon mode that sits in the background and processes new or modified files immediately.
+- YAML configuration with per-directory overrides and rewrite rules for power users.
+
+## Requirements
+
+- Debian/Ubuntu host, Python 3.10+, `python3-venv`, `libchromaprint-tools`, and `ffmpeg`/`libav` (for codecs unsupported by your installed decoders).
+- API credentials for [AcoustID](https://acoustid.org/api-key) and optionally for Discogs if you extend the provider list.
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --upgrade pip
+pip install -e .
+cp config.sample.yaml config.yaml
+audio-meta scan --config config.yaml
+```
+
+### Dry run
+
+Preview planned tag changes without modifying files by writing them to a JSON Lines file:
+
+```bash
+audio-meta scan --config config.yaml --dry-run-output /tmp/audio-meta-preview.jsonl
+```
+
+Each line contains the resolved metadata plus the lookup score so you can inspect matches before running the daemon for real.
+
+## Daemon installation
+
+1. Copy `systemd/audio-meta.service` to `/etc/systemd/system/audio-meta.service`.
+2. Adjust paths inside the service file so they point to your virtual environment and configuration file.
+3. Reload systemd and enable the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now audio-meta.service
+```
+
+The daemon writes logs to journald by default.
+
+## Architecture
+
+- `audio_meta.config.Settings` loads YAML configuration, validates directories, and exposes API keys.
+- `audio_meta.scanner.LibraryScanner` walks the filesystem and enqueues work for the processor.
+- `audio_meta.providers.musicbrainz.MusicBrainzClient` encapsulates network calls and rate limiting.
+- `audio_meta.tagging.TagWriter` coordinates reading/writing metadata using `mutagen`.
+- `audio_meta.classical.ClassicalHeuristics` provides a simple scoring mechanism that distinguishes classical repertoire and rewrites metadata accordingly.
+- `audio_meta.daemon.AudioMetaDaemon` runs the orchestrator and integrates with the CLI entry point.
+
+## Next steps
+
+The repository bootstraps a functional framework, but you will want to extend:
+
+- Persistent caching of processed file fingerprints (sqlite).
+- Discogs or streaming service providers for metadata gaps.
+- More advanced classical heuristics (machine-learning or MusicBrainz work tree lookups).
+- Comprehensive unit tests and CI automation.

@@ -1,0 +1,31 @@
+# Example configuration for audio-meta
+library:
+  roots:
+    - /srv/music
+  include_extensions:
+    - .mp3
+    - .flac
+    - .m4a
+  exclude_patterns:
+    - /lost+found
+
+providers:
+  acoustid_api_key: "YOUR-ACOUSTID-KEY"
+  musicbrainz_useragent: "audio-meta/0.1 (tom@example.com)"
+
+classical:
+  genre_keywords:
+    - classical
+    - baroque
+    - romantic
+    - opera
+  min_duration_seconds: 480
+  title_markers:
+    - symphony
+    - concerto
+    - suite
+    - sonata
+
+daemon:
+  worker_concurrency: 4
+  cache_path: /var/lib/audio-meta/cache.sqlite3

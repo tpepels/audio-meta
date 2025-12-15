@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE/project files
+.idea/
+.vscode/
+
+# Local configs and cache
+config.yaml
+.cache/
+/audio-meta-preview.jsonl
+
+# OS
+.DS_Store
+Thumbs.db

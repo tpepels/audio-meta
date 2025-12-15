@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=66", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio-meta"
+version = "0.1.0"
+description = "Audio metadata correction daemon that canonicalises artists and detects classical works."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Tom", email = "tom@example.com"}
+]
+dependencies = [
+    "mutagen>=1.47",
+    "pyacoustid>=1.2.2",
+    "musicbrainzngs>=0.7.1",
+    "watchdog>=4.0",
+    "pydantic>=2.6",
+    "PyYAML>=6.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy",
+    "ruff"
+]
+
+[project.scripts]
+audio-meta = "audio_meta.cli:main"
