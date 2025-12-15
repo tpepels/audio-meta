@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import musicbrainzngs
-import pyacoustid
+import acoustid
 
 from ..config import ProviderSettings
 from ..models import TrackMetadata
@@ -34,7 +34,7 @@ class MusicBrainzClient:
             return None
         meta.fingerprint = fingerprint
         meta.duration_seconds = duration
-        acoustic_matches = pyacoustid.lookup(
+        acoustic_matches = acoustid.lookup(
             self.settings.acoustid_api_key,
             fingerprint,
             duration,
@@ -55,9 +55,9 @@ class MusicBrainzClient:
 
     def _fingerprint(self, meta: TrackMetadata) -> tuple[Optional[str], Optional[int]]:
         try:
-            fingerprint, duration = pyacoustid.fingerprint_file(str(meta.path))
+            fingerprint, duration = acoustid.fingerprint_file(str(meta.path))
             return fingerprint, duration
-        except pyacoustid.FingerprintGenerationError as exc:
+        except acoustid.FingerprintGenerationError as exc:
             logger.error("Fingerprint failed for %s: %s", meta.path, exc)
             return None, None
 
