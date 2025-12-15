@@ -87,7 +87,7 @@ class ReleaseMatch:
 
 class ReleaseTracker:
     def __init__(self) -> None:
-        self.dir_release: Dict[Path, str] = {}
+        self.dir_release: Dict[Path, tuple[str, float]] = {}
         self.releases: Dict[str, ReleaseData] = {}
 
     def register(
@@ -100,7 +100,7 @@ class ReleaseTracker:
         if not release_id:
             return
         if album_dir not in self.dir_release:
-            self.dir_release[album_dir] = release_id
+            self.dir_release[album_dir] = (release_id, 0.0)
         if release_id not in self.releases:
             release = fetch_release(release_id)
             if not release:
@@ -110,7 +110,8 @@ class ReleaseTracker:
             self.releases[release_id].mark_claimed(matched_recording_id)
 
     def match(self, album_dir: Path, guess: PathGuess, duration: Optional[int]) -> Optional[ReleaseMatch]:
-        release_id = self.dir_release.get(album_dir)
+        entry = self.dir_release.get(album_dir)
+        release_id = entry[0] if entry else None
         if not release_id:
             return None
         release = self.releases.get(release_id)
@@ -121,6 +122,24 @@ class ReleaseTracker:
             return None
         track, confidence = claimed
         return ReleaseMatch(release=release, track=track, confidence=confidence)
+
+    def context(self, album_dir: Path) -> tuple[Optional[str], Optional[str], Optional[str], float]:
+        entry = self.dir_release.get(album_dir)
+        if not entry:
+            return None, None, None, 0.0
+        release_id, score = entry
+        release = self.releases.get(release_id)
+        if release:
+            return release_id, release.album_title, release.album_artist, score
+        return release_id, None, None, score
+
+    def remember_release(self, album_dir: Path, release_id: Optional[str], score: float) -> None:
+        if not release_id:
+            return
+        current = self.dir_release.get(album_dir)
+        if current and current[1] >= score:
+            return
+        self.dir_release[album_dir] = (release_id, score)
 
 class MusicBrainzClient:
     def __init__(self, settings: ProviderSettings, cache: Optional[MetadataCache] = None) -> None:
@@ -135,6 +154,8 @@ class MusicBrainzClient:
 
     def enrich(self, meta: TrackMetadata) -> Optional[LookupResult]:
         guess = guess_metadata_from_path(meta.path)
+        album_dir = meta.path.parent
+        dir_release_id, dir_release_title, dir_release_artist, dir_release_score = self.release_tracker.context(album_dir)
         duration, fingerprint = self._fingerprint(meta)
         if duration:
             meta.duration_seconds = duration
@@ -142,7 +163,15 @@ class MusicBrainzClient:
             meta.duration_seconds = meta.duration_seconds or self._probe_duration(meta.path)
         if fingerprint and duration:
             meta.fingerprint = fingerprint
-            result = self._lookup_by_fingerprint(meta, duration, fingerprint)
+            result = self._lookup_by_fingerprint(
+                meta,
+                duration,
+                fingerprint,
+                dir_release_id=dir_release_id,
+                dir_release_title=dir_release_title,
+                dir_release_artist=dir_release_artist,
+                dir_release_score=dir_release_score,
+            )
             if result:
                 meta.match_confidence = result.score
                 self._after_match(meta)
@@ -150,7 +179,14 @@ class MusicBrainzClient:
 
         tags = self._read_basic_tags(meta.path)
         if tags:
-            result = self._lookup_by_metadata(meta, tags)
+            result = self._lookup_by_metadata(
+                meta,
+                tags,
+                dir_release_id=dir_release_id,
+                dir_release_title=dir_release_title,
+                dir_release_artist=dir_release_artist,
+                dir_release_score=dir_release_score,
+            )
             if result:
                 meta.match_confidence = result.score
                 self._after_match(meta)
@@ -162,7 +198,14 @@ class MusicBrainzClient:
                 )
                 return result
 
-        guess_result = self._lookup_by_guess(meta, guess)
+        guess_result = self._lookup_by_guess(
+            meta,
+            guess,
+            dir_release_id=dir_release_id,
+            dir_release_title=dir_release_title,
+            dir_release_artist=dir_release_artist,
+            dir_release_score=dir_release_score,
+        )
         if guess_result:
             meta.match_confidence = guess_result.score
             self._after_match(meta)
@@ -192,10 +235,20 @@ class MusicBrainzClient:
                     release_match.track.title,
                     release_match.release.release_id,
                 )
+                self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
                 return LookupResult(meta, score=score)
         return None
 
-    def _lookup_by_fingerprint(self, meta: TrackMetadata, duration: int, fingerprint: str) -> Optional[LookupResult]:
+    def _lookup_by_fingerprint(
+        self,
+        meta: TrackMetadata,
+        duration: int,
+        fingerprint: str,
+        dir_release_id: Optional[str] = None,
+        dir_release_title: Optional[str] = None,
+        dir_release_artist: Optional[str] = None,
+        dir_release_score: float = 0.0,
+    ) -> Optional[LookupResult]:
         tags = self._read_basic_tags(meta.path)
         album_hint = self._album_hint(meta, tags)
         try:
@@ -211,13 +264,31 @@ class MusicBrainzClient:
             recording = self._fetch_recording(recording_id, meta.path)
             if not recording:
                 continue
-            self._apply_recording(meta, recording, title, artist, album_hint=album_hint)
+            self._apply_recording(
+                meta,
+                recording,
+                title,
+                artist,
+                preferred_release_id=dir_release_id,
+                release_hint_title=dir_release_title,
+                release_hint_artist=dir_release_artist,
+                album_hint=album_hint or dir_release_title,
+            )
             meta.acoustid_id = recording_id
             logger.info("Fingerprint matched %s (recording %s score %.2f)", meta.path, recording_id, score)
+            self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
             return LookupResult(meta, score=score)
         return None
 
-    def _lookup_by_metadata(self, meta: TrackMetadata, tags: dict[str, Optional[str]]) -> Optional[LookupResult]:
+    def _lookup_by_metadata(
+        self,
+        meta: TrackMetadata,
+        tags: dict[str, Optional[str]],
+        dir_release_id: Optional[str] = None,
+        dir_release_title: Optional[str] = None,
+        dir_release_artist: Optional[str] = None,
+        dir_release_score: float = 0.0,
+    ) -> Optional[LookupResult]:
         artist = tags.get("artist")
         title = tags.get("title")
         if not artist or not title:
@@ -244,15 +315,18 @@ class MusicBrainzClient:
         release_id, release_title, release_artist = self._extract_release(best, recording, album_hint=album_hint)
         fallback_album = tags.get("album")
         fallback_artist = tags.get("album_artist") or tags.get("artist")
+        preferred_release_id = dir_release_id or release_id
+        release_hint_title = dir_release_title or release_title or fallback_album
+        release_hint_artist = dir_release_artist or release_artist or fallback_artist
         self._apply_recording(
             meta,
             recording,
             best.get("title"),
             self._first_artist(recording),
-            preferred_release_id=release_id,
-            release_hint_title=release_title or fallback_album,
-            release_hint_artist=release_artist or fallback_artist,
-            album_hint=album_hint or release_title or fallback_album,
+            preferred_release_id=preferred_release_id,
+            release_hint_title=release_hint_title,
+            release_hint_artist=release_hint_artist,
+            album_hint=album_hint or release_hint_title,
         )
         if not meta.album and fallback_album:
             meta.album = fallback_album
@@ -260,9 +334,18 @@ class MusicBrainzClient:
             meta.album_artist = fallback_artist
         score = float(best.get("ext-score", 0)) / 100.0
         meta.musicbrainz_track_id = best["id"]
+        self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
         return LookupResult(meta, score=score)
 
-    def _lookup_by_guess(self, meta: TrackMetadata, guess: PathGuess) -> Optional[LookupResult]:
+    def _lookup_by_guess(
+        self,
+        meta: TrackMetadata,
+        guess: PathGuess,
+        dir_release_id: Optional[str] = None,
+        dir_release_title: Optional[str] = None,
+        dir_release_artist: Optional[str] = None,
+        dir_release_score: float = 0.0,
+    ) -> Optional[LookupResult]:
         if guess.confidence() < 0.4 or not guess.title:
             return None
         query: Dict[str, str] = {"recording": guess.title}
@@ -288,9 +371,13 @@ class MusicBrainzClient:
             recording,
             best.get("title"),
             self._first_artist(recording),
-            album_hint=album_hint,
+            preferred_release_id=dir_release_id,
+            release_hint_title=dir_release_title,
+            release_hint_artist=dir_release_artist,
+            album_hint=album_hint or dir_release_title,
         )
         score = float(best.get("ext-score", 0)) / 100.0 or guess.confidence()
+        self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
         return LookupResult(meta, score=score)
 
     def _album_hint(self, meta: TrackMetadata, tags: Optional[dict[str, Optional[str]]] = None) -> Optional[str]:
