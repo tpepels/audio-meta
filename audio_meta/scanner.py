@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import fnmatch
+import os
+from dataclasses import dataclass
 from collections.abc import Iterator
 from pathlib import Path
 
 from .config import LibrarySettings
 from .models import TrackMetadata
+
+
+@dataclass
+class DirectoryBatch:
+    directory: Path
+    files: list[Path]
 
 
 class LibraryScanner:
@@ -34,3 +42,32 @@ class LibraryScanner:
             if fnmatch.fnmatch(rel, pattern):
                 return False
         return True
+
+    def iter_directories(self) -> Iterator[DirectoryBatch]:
+        for root in self.settings.roots:
+            if not root.exists():
+                continue
+            for dirpath, _, filenames in os.walk(root):
+                directory = Path(dirpath)
+                files: list[Path] = []
+                for name in filenames:
+                    file_path = directory / name
+                    if not file_path.is_file():
+                        continue
+                    if not self._should_include(file_path):
+                        continue
+                    files.append(file_path)
+                if files:
+                    yield DirectoryBatch(directory=directory, files=files)
+
+    def collect_directory(self, directory: Path) -> DirectoryBatch | None:
+        if not directory.exists() or not directory.is_dir():
+            return None
+        files = [
+            path
+            for path in directory.iterdir()
+            if path.is_file() and self._should_include(path)
+        ]
+        if not files:
+            return None
+        return DirectoryBatch(directory=directory, files=files)
