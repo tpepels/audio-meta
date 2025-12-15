@@ -30,7 +30,7 @@ classical:
 
 daemon:
   worker_concurrency: 4
-  cache_path: /var/lib/audio-meta/cache.sqlite3
+  cache_path: ./cache/cache.sqlite3
 
 organizer:
   enabled: false

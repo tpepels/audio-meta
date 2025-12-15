@@ -33,12 +33,12 @@ class ProviderSettings(BaseModel):
 
 class DaemonSettings(BaseModel):
     worker_concurrency: int = 4
-    cache_path: Path = Path("~/.cache/audio-meta/cache.sqlite3")
+    cache_path: Path = Path("./cache/cache.sqlite3")
 
     @field_validator("cache_path", mode="before")
     @classmethod
     def _expand_cache(cls, value: str | Path) -> Path:
-        return Path(value).expanduser()
+        return Path(value).expanduser().resolve()
 
 
 class OrganizerSettings(BaseModel):
