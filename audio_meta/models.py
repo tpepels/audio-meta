@@ -42,11 +42,21 @@ class TrackMetadata:
             "conductor": self.conductor,
             "work": self.work,
             "movement": self.movement,
-            "genre": self.genre,
+            "genre": self._serialize(self.genre),
             "duration_seconds": self.duration_seconds,
-            "extra": dict(self.extra),
+            "extra": {key: self._serialize(value) for key, value in self.extra.items()},
             "match_confidence": self.match_confidence,
         }
+
+    @staticmethod
+    def _serialize(value: object) -> object:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, list):
+            return [TrackMetadata._serialize(item) for item in value]
+        if isinstance(value, dict):
+            return {k: TrackMetadata._serialize(v) for k, v in value.items()}
+        return value
 
 
 class ProcessingError(Exception):
