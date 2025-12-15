@@ -44,7 +44,7 @@ class TagWriter:
         changes: Dict[str, Dict[str, Optional[str]]] = {}
         for key, expected in desired.items():
             current_value = None if current is None else current.get(key)
-            if self._normalize(current_value) != self._normalize(expected):
+            if expected is not None and self._normalize(current_value) != self._normalize(expected):
                 changes[key] = {
                     "old": current_value,
                     "new": expected,
@@ -52,7 +52,7 @@ class TagWriter:
         return changes
 
     def _desired_map(self, meta: TrackMetadata) -> Dict[str, Optional[str]]:
-        return {
+        mapping = {
             "title": meta.title,
             "album": meta.album,
             "artist": meta.artist,
@@ -62,6 +62,7 @@ class TagWriter:
             "work": meta.work,
             "movement": meta.movement,
         }
+        return {k: v for k, v in mapping.items() if v is not None}
 
     def _read_tags(self, meta: TrackMetadata, ext: str) -> Optional[Dict[str, Optional[str]]]:
         try:
@@ -172,8 +173,6 @@ class TagWriter:
         for key, value in mapping.items():
             if value:
                 audio[key] = [value]
-            elif key in audio:
-                del audio[key]
         for key, value in meta.extra.items():
             audio[f"----:com.audio-meta:{key}"] = [value.encode("utf-8")]
         audio.save()
@@ -182,13 +181,9 @@ class TagWriter:
         for key, value in mapping.items():
             if value:
                 audio[key] = value
-            elif key in audio:
-                del audio[key]
         for key, value in extra.items():
             audio[key] = value
 
     def _set_frame(self, tags: ID3, frame_cls, value: str | None, desc: str = "") -> None:
         if value:
             tags.setall(frame_cls.__name__, [frame_cls(encoding=3, text=value, desc=desc)])
-        else:
-            tags.delall(frame_cls.__name__)

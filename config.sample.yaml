@@ -12,6 +12,8 @@ library:
 providers:
   acoustid_api_key: "YOUR-ACOUSTID-KEY"
   musicbrainz_useragent: "audio-meta/0.1 (tom@example.com)"
+  discogs_token: "YOUR-DISCOGS-TOKEN"
+  discogs_useragent: "audio-meta/0.1 (tom@example.com)"
 
 classical:
   genre_keywords:

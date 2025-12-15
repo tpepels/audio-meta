@@ -5,6 +5,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Optional
 
 import musicbrainzngs
 
@@ -23,6 +24,10 @@ def validate_providers(settings: ProviderSettings) -> None:
         _validate_musicbrainz(settings.musicbrainz_useragent)
     except Exception as exc:  # pragma: no cover - network failure depends on env
         errors.append(f"MusicBrainz validation failed: {exc}")
+    try:
+        _validate_discogs(settings.discogs_token, settings.discogs_useragent)
+    except Exception as exc:
+        errors.append(f"Discogs validation failed: {exc}")
     if errors:
         message = "\n".join(errors)
         raise SystemExit(f"Provider validation failed:\n{message}")
@@ -57,3 +62,20 @@ def _validate_musicbrainz(useragent: str) -> None:
         musicbrainzngs.search_recordings(artist="Miles Davis", limit=1)
     except musicbrainzngs.ResponseError as exc:
         raise RuntimeError(f"MusicBrainz API call failed: {exc}") from exc
+
+
+def _validate_discogs(token: Optional[str], useragent: str) -> None:
+    if not token:
+        return
+    url = f"https://api.discogs.com/database/search?token={token}&type=release&per_page=1"
+    req = urllib.request.Request(url, headers={"User-Agent": useragent})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                return
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise RuntimeError("Discogs token rejected") from exc
+        raise RuntimeError(f"Discogs HTTP error {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"unable to reach Discogs API: {exc}") from exc

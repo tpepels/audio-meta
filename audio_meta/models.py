@@ -29,7 +29,7 @@ class TrackMetadata:
     def to_record(self) -> Dict[str, object]:
         payload = {
             "path": str(self.path),
-            "fingerprint": self.fingerprint,
+            "fingerprint": "<omitted>" if self.fingerprint else None,
             "acoustid_id": self.acoustid_id,
             "musicbrainz_track_id": self.musicbrainz_track_id,
             "musicbrainz_release_id": self.musicbrainz_release_id,

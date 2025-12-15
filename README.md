@@ -5,7 +5,7 @@ Audio metadata correction daemon for Linux libraries. The tool walks a directory
 ## Features
 
 - Recursive library scanning with caching to avoid repeatedly processing the same file.
-- Uses [Chromaprint](https://acoustid.org/chromaprint) fingerprints via `pyacoustid` to match files against MusicBrainz releases.
+- Uses [Chromaprint](https://acoustid.org/chromaprint) fingerprints via `pyacoustid` to match files against MusicBrainz releases, with Discogs fallbacks for missing metadata.
 - Normalisation pipeline that focuses on canonical artist, album artist, composer, performers, and work/movement metadata for classical music.
 - Watchdog-powered daemon mode that sits in the background and processes new or modified files immediately.
 - YAML configuration with per-directory overrides and rewrite rules for power users.
@@ -69,6 +69,7 @@ The daemon writes logs to journald by default.
 - `audio_meta.config.Settings` loads YAML configuration, validates directories, and exposes API keys.
 - `audio_meta.scanner.LibraryScanner` walks the filesystem and enqueues work for the processor.
 - `audio_meta.providers.musicbrainz.MusicBrainzClient` coordinates fingerprint lookups, metadata searches, filename guesses, and release-level inference with confidence scoring.
+- `audio_meta.providers.discogs.DiscogsClient` supplements or replaces MusicBrainz data when necessary, ensuring album/artist metadata is filled even for obscure releases.
 - `audio_meta.heuristics.PathGuess` parses folder/file names into probable artist/album/track information when embedded tags are missing.
 - `audio_meta.providers.musicbrainz.ReleaseTracker` caches release tracklists so sibling files can reuse the same MusicBrainz release metadata.
 - `audio_meta.organizer.Organizer` determines target directories (artist/album vs composer/performer/album) and moves files accordingly once tagging succeeds.

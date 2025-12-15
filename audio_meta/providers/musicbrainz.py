@@ -235,15 +235,21 @@ class MusicBrainzClient:
         if not recording:
             return None
         release_id, release_title, release_artist = self._extract_release(best, recording)
+        fallback_album = tags.get("album")
+        fallback_artist = tags.get("album_artist") or tags.get("artist")
         self._apply_recording(
             meta,
             recording,
             best.get("title"),
             self._first_artist(recording),
             preferred_release_id=release_id,
-            release_hint_title=release_title,
-            release_hint_artist=release_artist,
+            release_hint_title=release_title or fallback_album,
+            release_hint_artist=release_artist or fallback_artist,
         )
+        if not meta.album and fallback_album:
+            meta.album = fallback_album
+        if not meta.album_artist and fallback_artist:
+            meta.album_artist = fallback_artist
         score = float(best.get("ext-score", 0)) / 100.0
         meta.musicbrainz_track_id = best["id"]
         return LookupResult(meta, score=score)

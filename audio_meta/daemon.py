@@ -14,7 +14,8 @@ from .classical import ClassicalHeuristics
 from .config import Settings
 from .models import ProcessingError, TrackMetadata
 from .organizer import Organizer
-from .providers.musicbrainz import MusicBrainzClient
+from .providers.discogs import DiscogsClient
+from .providers.musicbrainz import LookupResult, MusicBrainzClient
 from .scanner import LibraryScanner
 from .tagging import TagWriter
 
@@ -43,7 +44,7 @@ class DryRunRecorder:
         if relocate_to:
             payload["relocate_from"] = str(relocate_from or meta.path)
             payload["relocate_to"] = str(relocate_to)
-        line = json.dumps(payload)
+        line = json.dumps(payload, indent=2, sort_keys=True)
         with self._lock:
             with self.output_path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
@@ -75,6 +76,12 @@ class AudioMetaDaemon:
         self.settings = settings
         self.scanner = LibraryScanner(settings.library)
         self.musicbrainz = MusicBrainzClient(settings.providers)
+        self.discogs = None
+        if settings.providers.discogs_token:
+            try:
+                self.discogs = DiscogsClient(settings.providers)
+            except Exception as exc:
+                logger.warning("Failed to initialise Discogs client: %s", exc)
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
         self.organizer = Organizer(settings.organizer, settings.library)
@@ -139,6 +146,18 @@ class AudioMetaDaemon:
     def _process_path(self, path: Path) -> None:
         meta = TrackMetadata(path=path)
         result = self.musicbrainz.enrich(meta)
+        if result and self.discogs and self._needs_supplement(meta):
+            try:
+                supplement = self.discogs.supplement(meta)
+                if supplement:
+                    result = LookupResult(meta, score=max(result.score, supplement.score))
+            except Exception:
+                logger.exception("Discogs supplement failed for %s", path)
+        if not result and self.discogs:
+            try:
+                result = self.discogs.enrich(meta)
+            except Exception:
+                logger.exception("Discogs lookup failed for %s", path)
         if not result:
             logger.info("No metadata match for %s", path)
             return
@@ -172,3 +191,6 @@ class AudioMetaDaemon:
                 self.organizer.move(meta, target_path, dry_run=False)
         except ProcessingError as exc:
             logger.warning("Failed to update tags for %s: %s", path, exc)
+
+    def _needs_supplement(self, meta: TrackMetadata) -> bool:
+        return not meta.album or not meta.artist or not meta.album_artist

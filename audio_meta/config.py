@@ -27,6 +27,8 @@ class ClassicalSettings(BaseModel):
 class ProviderSettings(BaseModel):
     acoustid_api_key: str
     musicbrainz_useragent: str = "audio-meta/0.1 (unknown@example.com)"
+    discogs_token: Optional[str] = None
+    discogs_useragent: str = "audio-meta/0.1 +https://example.com"
 
 
 class DaemonSettings(BaseModel):
