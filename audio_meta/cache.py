@@ -30,7 +30,21 @@ class MetadataCache:
             CREATE TABLE IF NOT EXISTS processed_files (
                 path TEXT PRIMARY KEY,
                 mtime_ns INTEGER NOT NULL,
-                size_bytes INTEGER NOT NULL
+                size_bytes INTEGER NOT NULL,
+                organized INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        try:
+            self._conn.execute("ALTER TABLE processed_files ADD COLUMN organized INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS moves (
+                source_path TEXT PRIMARY KEY,
+                target_path TEXT NOT NULL,
+                moved_at TEXT NOT NULL
             )
             """
         )
@@ -65,27 +79,57 @@ class MetadataCache:
         payload = value or {}
         self._set("discogs_search", key, payload)
 
-    def get_processed_file(self, path: Path) -> Optional[tuple[int, int]]:
+    def get_processed_file(self, path: Path) -> Optional[tuple[int, int, bool]]:
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT mtime_ns, size_bytes FROM processed_files WHERE path = ?",
+                "SELECT mtime_ns, size_bytes, organized FROM processed_files WHERE path = ?",
                 (str(path),),
             )
             row = cursor.fetchone()
         if not row:
             return None
-        return int(row[0]), int(row[1])
+        mtime, size, organized = row
+        return int(mtime), int(size), bool(organized)
 
-    def set_processed_file(self, path: Path, mtime_ns: int, size_bytes: int) -> None:
+    def set_processed_file(self, path: Path, mtime_ns: int, size_bytes: int, organized: bool) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO processed_files(path, mtime_ns, size_bytes)
-                VALUES(?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns, size_bytes=excluded.size_bytes
+                INSERT INTO processed_files(path, mtime_ns, size_bytes, organized)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns, size_bytes=excluded.size_bytes, organized=excluded.organized
                 """,
-                (str(path), int(mtime_ns), int(size_bytes)),
+                (str(path), int(mtime_ns), int(size_bytes), 1 if organized else 0),
             )
+            self._conn.commit()
+
+    def record_move(self, source: Path, target: Path) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO moves(source_path, target_path, moved_at)
+                VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(source_path) DO UPDATE SET target_path=excluded.target_path, moved_at=excluded.moved_at
+                """,
+                (str(source), str(target)),
+            )
+            self._conn.commit()
+
+    def get_move(self, source: Path) -> Optional[Path]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT target_path FROM moves WHERE source_path = ?",
+                (str(source),),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return Path(row[0])
+
+    def clear_moves(self) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM moves")
+            self._conn.execute("UPDATE processed_files SET organized = 0")
             self._conn.commit()
 
     def _get(self, namespace: str, key: str) -> Optional[dict]:

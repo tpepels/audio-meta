@@ -171,9 +171,22 @@ class AudioMetaDaemon:
                 stat_before = self._safe_stat(file_path)
                 if stat_before:
                     cached_state = self.cache.get_processed_file(file_path)
-                    if cached_state and cached_state == (stat_before.st_mtime_ns, stat_before.st_size):
-                        logger.debug("Skipping %s; already processed and unchanged", file_path)
-                        continue
+                    if cached_state:
+                        cached_mtime, cached_size, organized_flag = cached_state
+                        if cached_mtime == stat_before.st_mtime_ns and cached_size == stat_before.st_size:
+                            if self.organizer.enabled and not organized_flag:
+                                logger.debug("Reprocessing %s because organizer is now enabled", file_path)
+                            else:
+                                moved_target = self.cache.get_move(file_path)
+                                if moved_target and Path(moved_target).exists():
+                                    logger.warning(
+                                        "File %s already moved to %s; skipping stale copy",
+                                        file_path,
+                                        moved_target,
+                                    )
+                                    continue
+                                logger.debug("Skipping %s; already processed and unchanged", file_path)
+                                continue
             result = self.musicbrainz.enrich(meta)
             if result and self.discogs and self._needs_supplement(meta):
                 try:
@@ -270,6 +283,8 @@ class AudioMetaDaemon:
             if target_path:
                 self.organizer.move(meta, target_path, dry_run=True)
             return
+        original_path = meta.path
+        organized_flag = self.organizer.enabled
         try:
             if tag_changes:
                 self.tag_writer.apply(meta)
@@ -278,12 +293,18 @@ class AudioMetaDaemon:
                 logger.debug("Tags already up to date for %s", meta.path)
             if target_path:
                 self.organizer.move(meta, target_path, dry_run=False)
+                self.cache.record_move(original_path, target_path)
         except ProcessingError as exc:
             logger.warning("Failed to update tags for %s: %s", meta.path, exc)
             return
         stat_after = self._safe_stat(meta.path)
         if stat_after:
-            self.cache.set_processed_file(meta.path, stat_after.st_mtime_ns, stat_after.st_size)
+            self.cache.set_processed_file(
+                meta.path,
+                stat_after.st_mtime_ns,
+                stat_after.st_size,
+                organized_flag,
+            )
 
     def _needs_supplement(self, meta: TrackMetadata) -> bool:
         return not meta.album or not meta.artist or not meta.album_artist

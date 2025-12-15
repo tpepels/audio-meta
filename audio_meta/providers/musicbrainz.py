@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import re
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 import difflib
@@ -449,9 +450,10 @@ class MusicBrainzClient:
                 "artist-credit": [{"name": release_hint_artist}] if release_hint_artist else [],
             }
         meta.title = title or recording.get("title")
-        meta.artist = artist or self._first_artist(recording)
+        meta.artist = self._normalize_artists(artist or self._first_artist(recording))
         meta.album = release.get("title") if isinstance(release, dict) else meta.album
-        meta.album_artist = self._first_artist(release) or meta.artist
+        release_artist = self._normalize_artists(self._first_artist(release))
+        meta.album_artist = release_artist or meta.artist
         meta.musicbrainz_track_id = recording.get("id")
         meta.musicbrainz_release_id = release.get("id") if isinstance(release, dict) else meta.musicbrainz_release_id
         work_rels = recording.get("work-relation-list", [])
@@ -525,6 +527,16 @@ class MusicBrainzClient:
                 return best_release
         return releases[0]
 
+    def _normalize_artists(self, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        tokens = [chunk.strip() for chunk in re.split(r"[;,]+", value) if chunk.strip()]
+        unique: List[str] = []
+        for token in tokens:
+            base = token.split(" (", 1)[0].strip()
+            if base and base not in unique:
+                unique.append(base)
+        return ", ".join(unique) if unique else None
     def _title_similarity(self, first: Optional[str], second: Optional[str]) -> float:
         if not first or not second:
             return 0.0
