@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Audio metadata correction daemon that canonicalises artists and detects classical works."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Tom", email = "tom@example.com"}
 ]
@@ -29,3 +29,6 @@ dev = [
 
 [project.scripts]
 audio-meta = "audio_meta.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["audio_meta*"]
