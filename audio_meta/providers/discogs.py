@@ -121,11 +121,16 @@ class DiscogsClient:
 
     def _join_artists(self, artists: List[dict]) -> Optional[str]:
         names = [artist.get("name") for artist in artists if artist.get("name")]
+        return self._normalize_artist_string(", ".join(names))
+
+    def _normalize_artist_string(self, value: str) -> Optional[str]:
+        if not value:
+            return None
         cleaned = []
-        for name in names:
-            base = name.split(" (")[0]
-            parts = [part.strip() for part in re.split(r"[;,]+", base) if part.strip()]
-            cleaned.extend(parts or [base.strip()])
+        for chunk in re.split(r"[;,]+", value):
+            base = chunk.split(" (")[0].strip()
+            if base:
+                cleaned.append(base)
         unique = []
         for entry in cleaned:
             if entry not in unique:

@@ -68,13 +68,13 @@ class Organizer:
     def _build_directory(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if is_classical:
             return self._classical_directory(meta)
-        artist = self._safe(meta.album_artist or meta.artist, UNKNOWN_ARTIST)
+        artist = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
         return self.target_root / artist / album
 
     def _classical_directory(self, meta: TrackMetadata) -> Optional[Path]:
         composer = self._safe(meta.composer, UNKNOWN_ARTIST)
-        performer = self._safe(meta.album_artist or meta.artist, UNKNOWN_ARTIST)
+        performer = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
         if composer:
             release_key = self._release_key(meta)
@@ -89,7 +89,7 @@ class Organizer:
         if meta.musicbrainz_release_id:
             return meta.musicbrainz_release_id
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
-        artist = self._safe(meta.album_artist or meta.artist, UNKNOWN_ARTIST)
+        artist = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         return f"{artist}|{album}"
 
     @staticmethod
@@ -104,3 +104,11 @@ class Organizer:
     def _guess_album(self, meta: TrackMetadata) -> Optional[str]:
         guess = guess_metadata_from_path(meta.path)
         return guess.album
+
+    def _primary_artist(self, meta: TrackMetadata) -> Optional[str]:
+        source = meta.album_artist or meta.artist
+        if not source:
+            guess = guess_metadata_from_path(meta.path)
+            return guess.artist
+        parts = [part.strip() for part in re.split(r"[;,]+", source) if part.strip()]
+        return parts[0] if parts else source
