@@ -198,6 +198,9 @@ class AudioMetaDaemon:
         if not prepared:
             return
         batch = prepared
+        if self._directory_already_processed(batch):
+            logger.debug("Skipping %s; already processed and organized", batch.directory)
+            return
         planned: list[PlannedUpdate] = []
         logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
         pending_results: list[PendingResult] = []
@@ -205,9 +208,15 @@ class AudioMetaDaemon:
         release_examples: dict[str, ReleaseExample] = {}
         dir_track_count, dir_year = self._directory_context(batch.directory, batch.files)
         cached_discogs_release_details = None
+        forced_provider: Optional[str] = None
+        forced_release_id: Optional[str] = None
+        forced_release_score: float = 0.0
         cached_release_entry = self._cached_release_for_directory(batch.directory)
         if cached_release_entry:
             provider, cached_release_id, cached_score = cached_release_entry
+            forced_provider = provider
+            forced_release_id = cached_release_id
+            forced_release_score = cached_score
             if provider == "musicbrainz":
                 self.musicbrainz.release_tracker.register(
                     batch.directory,
@@ -225,6 +234,7 @@ class AudioMetaDaemon:
                         disc_count=release_data.disc_count or None,
                         formats=list(release_data.formats),
                     )
+                release_scores[cached_release_id] = max(release_scores.get(cached_release_id, 0.0), cached_score or 1.0)
             elif provider == "discogs" and self.discogs:
                 cached_discogs_release_details = self.discogs.get_release(int(cached_release_id))
 
@@ -338,9 +348,15 @@ class AudioMetaDaemon:
                 best_release_id = rid
                 best_score = score
         ambiguous_cutoff = 0.05
+        if forced_provider == "musicbrainz" and forced_release_id:
+            best_release_id = forced_release_id
+            best_score = release_scores.get(forced_release_id, forced_release_score or 1.0)
+            release_scores[forced_release_id] = best_score
         ambiguous_candidates = [
             (rid, score) for rid, score in release_scores.items() if best_release_id and best_score - score <= ambiguous_cutoff
         ]
+        if forced_provider == "musicbrainz" and forced_release_id and best_release_id == forced_release_id:
+            ambiguous_candidates = [(forced_release_id, best_score)]
         if best_release_id and len(ambiguous_candidates) > 1:
             if self.interactive:
                 sample_meta = pending_results[0].meta if pending_results else None
@@ -630,12 +646,16 @@ class AudioMetaDaemon:
         for option in options:
             print(f"  {option['idx']}. {option['label']}")
         print("  0. Skip this directory")
+        print("  mb:<release-id> or dg:<release-id> to enter an ID manually")
         while True:
             choice = input("Select release (0=skip): ").strip()
             if choice.lower() in {"0", "s", "skip"}:
                 return None
+            manual = self._parse_manual_release_choice(choice)
+            if manual:
+                return manual
             if not choice.isdigit():
-                print("Invalid selection; enter a number.")
+                print("Invalid selection; enter a number or mb:/dg: identifier.")
                 continue
             number = int(choice)
             match = next((opt for opt in options if opt["idx"] == number), None)
@@ -718,13 +738,17 @@ class AudioMetaDaemon:
         for option in options:
             print(f"  {option['idx']}. {option['label']}")
         print("  0. Skip this directory")
+        print("  mb:<release-id> or dg:<release-id> to enter an ID manually")
         while True:
             choice = input("Select release (0=skip): ").strip()
             if choice.lower() in {"0", "s", "skip"}:
                 self._record_skip(directory, "User skipped manual release selection")
                 return None
+            manual = self._parse_manual_release_choice(choice)
+            if manual:
+                return manual
             if not choice.isdigit():
-                print("Invalid selection; enter a number.")
+                print("Invalid selection; enter a number or mb:/dg: identifier.")
                 continue
             number = int(choice)
             match = next((opt for opt in options if opt["idx"] == number), None)
@@ -931,6 +955,49 @@ class AudioMetaDaemon:
 
     def _directory_context(self, directory: Path, files: list[Path]) -> tuple[int, Optional[int]]:
         return len(files), self._infer_year_from_directory(directory)
+
+    def _parse_manual_release_choice(self, raw: str) -> Optional[tuple[str, str]]:
+        value = raw.strip()
+        if not value:
+            return None
+        lowered = value.lower()
+        for prefix in ("mb:", "musicbrainz:"):
+            if lowered.startswith(prefix):
+                release_id = value[len(prefix) :].strip()
+                if release_id:
+                    return "musicbrainz", release_id
+                return None
+        for prefix in ("dg:", "discogs:"):
+            if lowered.startswith(prefix):
+                release_id = value[len(prefix) :].strip()
+                if release_id.isdigit():
+                    return "discogs", release_id
+                print("Discogs IDs must be numeric.")
+                return None
+        if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value.lower()):
+            return "musicbrainz", value
+        if value.isdigit():
+            return "discogs", value
+        return None
+
+    def _directory_already_processed(self, batch: DirectoryBatch) -> bool:
+        if not batch.files:
+            return False
+        for file_path in batch.files:
+            stat = self._safe_stat(file_path)
+            if not stat:
+                return False
+            cached = self.cache.get_processed_file(file_path)
+            if not cached:
+                return False
+            cached_mtime, cached_size, organized_flag = cached
+            if (
+                cached_mtime != stat.st_mtime_ns
+                or cached_size != stat.st_size
+                or not organized_flag
+            ):
+                return False
+        return True
 
     def _infer_year_from_directory(self, directory: Path) -> Optional[int]:
         segments = [directory.name]
