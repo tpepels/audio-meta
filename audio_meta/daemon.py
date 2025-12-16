@@ -856,7 +856,7 @@ class AudioMetaDaemon:
             self._record_skip(directory, "No interactive release options available")
             logger.warning("No interactive options available for %s", directory)
             return None
-        options.sort(key=lambda opt: opt.get("score", 0.0), reverse=True)
+        options.sort(key=lambda opt: (opt.get("score") or 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self._display_path(directory)
         print(f"\nAmbiguous release for {display} – {dir_track_count} tracks detected, year hint {year_hint}:")
