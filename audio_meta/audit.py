@@ -27,6 +27,7 @@ class SingletonEntry:
     target: Optional[Path]
     canonical_path: Optional[Path]
     release_home: Optional[Path]
+    release_id: Optional[str]
 
 
 class LibraryAuditor:
@@ -204,10 +205,16 @@ class LibraryAuditor:
                 canonical = self.organizer.canonical_target(meta, classical)
                 target: Optional[Path] = None
                 release_home: Optional[Path] = None
+                release_id: Optional[str] = None
+                release_entry = self.cache.get_directory_release(directory) if self.cache else None
+                if release_entry:
+                    _, release_id, _ = release_entry
+                if not release_id and meta.musicbrainz_release_id:
+                    release_id = meta.musicbrainz_release_id
                 if canonical and canonical != file_path:
                     target = canonical
                 else:
-                    release_home = self._find_release_home(meta, directory)
+                    release_home = self._find_release_home(release_id, directory)
                     if release_home and release_home != directory:
                         filename = canonical.name if canonical else file_path.name
                         target = self.organizer._truncate_target(release_home / filename)
@@ -220,14 +227,15 @@ class LibraryAuditor:
                         target=target,
                         canonical_path=canonical,
                         release_home=release_home,
+                        release_id=release_id,
                     )
                 )
         return entries
 
-    def _find_release_home(self, meta: TrackMetadata, current_dir: Path) -> Optional[Path]:
-        if not self.cache or not meta.musicbrainz_release_id:
+    def _find_release_home(self, release_id: Optional[str], current_dir: Path) -> Optional[Path]:
+        if not self.cache or not release_id:
             return None
-        directories = self.cache.find_directories_for_release(meta.musicbrainz_release_id)
+        directories = self.cache.find_directories_for_release(release_id)
         best_dir: Optional[Path] = None
         best_count = 0
         for raw in directories:

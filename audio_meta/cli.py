@@ -310,8 +310,8 @@ def review_singletons(settings: Settings) -> None:
             if entry.meta.composer:
                 print(f"    Composer: {entry.meta.composer}")
             print(f"    Title: {entry.meta.title or '<unknown>'}")
-            if entry.meta.musicbrainz_release_id:
-                print(f"    Release ID: {entry.meta.musicbrainz_release_id}")
+            if entry.release_id:
+                print(f"    Release ID: {entry.release_id}")
             if entry.target:
                 target_label = auditor.display_path(entry.target.parent)
                 print(f"    Suggested target: {target_label}/{entry.target.name}")
