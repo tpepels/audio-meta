@@ -92,7 +92,7 @@ def main() -> None:
         cache = MetadataCache(settings.daemon.cache_path)
         cache.clear_moves()
         cache.close()
-    daemon = AudioMetaDaemon(settings, dry_run_output=args.dry_run_output)
+    daemon = AudioMetaDaemon(settings, dry_run_output=args.dry_run_output, interactive=(args.command == "scan"))
 
     try:
         match args.command:

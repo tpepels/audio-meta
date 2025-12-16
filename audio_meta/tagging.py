@@ -172,9 +172,9 @@ class TagWriter:
         }
         for key, value in mapping.items():
             if value:
-                audio[key] = [value]
+                self._set_mp4_value(audio, key, value)
         for key, value in meta.extra.items():
-            audio[f"----:com.audio-meta:{key}"] = [value.encode("utf-8")]
+            self._set_mp4_value(audio, f"----:com.audio-meta:{key}", value, freeform=True)
         audio.save()
 
     def _write_vorbis_comments(self, audio: FLAC, mapping: Dict[str, str | None], extra: Dict[str, str]) -> None:
@@ -187,3 +187,10 @@ class TagWriter:
     def _set_frame(self, tags: ID3, frame_cls, value: str | None, desc: str = "") -> None:
         if value:
             tags.setall(frame_cls.__name__, [frame_cls(encoding=3, text=value, desc=desc)])
+
+    def _set_mp4_value(self, audio: MP4, key: str, value: str, freeform: bool = False) -> None:
+        if freeform or key.startswith("----:"):
+            payload = value.encode("utf-8") if isinstance(value, str) else value
+            audio[key] = [payload]
+        else:
+            audio[key] = [value]

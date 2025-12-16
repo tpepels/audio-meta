@@ -34,10 +34,17 @@ class ReleaseTrack:
 
 
 class ReleaseData:
-    def __init__(self, release_id: str, album_title: Optional[str], album_artist: Optional[str]) -> None:
+    def __init__(
+        self,
+        release_id: str,
+        album_title: Optional[str],
+        album_artist: Optional[str],
+        release_date: Optional[str],
+    ) -> None:
         self.release_id = release_id
         self.album_title = album_title
         self.album_artist = album_artist
+        self.release_date = release_date
         self.tracks: List[ReleaseTrack] = []
         self.claimed: set[str] = set()
 
@@ -124,15 +131,15 @@ class ReleaseTracker:
         track, confidence = claimed
         return ReleaseMatch(release=release, track=track, confidence=confidence)
 
-    def context(self, album_dir: Path) -> tuple[Optional[str], Optional[str], Optional[str], float]:
+    def context(self, album_dir: Path) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], float]:
         entry = self.dir_release.get(album_dir)
         if not entry:
-            return None, None, None, 0.0
+            return None, None, None, None, 0.0
         release_id, score = entry
         release = self.releases.get(release_id)
         if release:
-            return release_id, release.album_title, release.album_artist, score
-        return release_id, None, None, score
+            return release_id, release.album_title, release.album_artist, release.release_date, score
+        return release_id, None, None, None, score
 
     def remember_release(self, album_dir: Path, release_id: Optional[str], score: float) -> None:
         if not release_id:
@@ -156,7 +163,7 @@ class MusicBrainzClient:
     def enrich(self, meta: TrackMetadata) -> Optional[LookupResult]:
         guess = guess_metadata_from_path(meta.path)
         album_dir = meta.path.parent
-        dir_release_id, dir_release_title, dir_release_artist, dir_release_score = self.release_tracker.context(album_dir)
+        dir_release_id, dir_release_title, dir_release_artist, dir_release_date, dir_release_score = self.release_tracker.context(album_dir)
         duration, fingerprint = self._fingerprint(meta)
         if duration:
             meta.duration_seconds = duration
@@ -582,7 +589,7 @@ class MusicBrainzClient:
         release_id = release.get("id")
         if not release_id:
             raise ValueError("release payload missing id")
-        data = ReleaseData(release_id, release.get("title"), self._first_artist(release))
+        data = ReleaseData(release_id, release.get("title"), self._first_artist(release), release.get("date"))
         for medium in release.get("medium-list", []):
             for track in medium.get("track-list", []):
                 recording = track.get("recording", {})

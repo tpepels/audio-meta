@@ -12,6 +12,7 @@ from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
 
 from .classical import ClassicalHeuristics
+from .heuristics import guess_metadata_from_path
 from .config import Settings
 from .models import ProcessingError, TrackMetadata
 from .organizer import Organizer
@@ -85,7 +86,7 @@ class _WatchHandler(FileSystemEventHandler):
 
 
 class AudioMetaDaemon:
-    def __init__(self, settings: Settings, dry_run_output: Optional[Path] = None) -> None:
+    def __init__(self, settings: Settings, dry_run_output: Optional[Path] = None, interactive: bool = False) -> None:
         self.settings = settings
         self.cache = MetadataCache(settings.daemon.cache_path)
         self.scanner = LibraryScanner(settings.library)
@@ -102,6 +103,7 @@ class AudioMetaDaemon:
         self.queue: asyncio.Queue[DirectoryBatch] = asyncio.Queue()
         self.observer: Observer | None = None
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
+        self.interactive = interactive
         if self.dry_run_recorder:
             logger.debug("Dry-run mode enabled; writing preview to %s", dry_run_output)
 
@@ -140,7 +142,8 @@ class AudioMetaDaemon:
         self.observer = observer
 
     def _start_workers(self) -> list[asyncio.Task[None]]:
-        return [asyncio.create_task(self._worker(i)) for i in range(self.settings.daemon.worker_concurrency)]
+        concurrency = 1 if self.interactive else self.settings.daemon.worker_concurrency
+        return [asyncio.create_task(self._worker(i)) for i in range(concurrency)]
 
     async def _stop_workers(self, workers: list[asyncio.Task[None]]) -> None:
         for worker in workers:
@@ -204,9 +207,11 @@ class AudioMetaDaemon:
             if result and meta.musicbrainz_release_id:
                 release_id = meta.musicbrainz_release_id
                 release_scores[release_id] = max(release_scores.get(release_id, 0.0), result.score)
+                release_data = self.release_tracker.releases.get(release_id)
                 release_examples[release_id] = (
-                    meta.album or "",
-                    meta.album_artist or meta.artist or "",
+                    release_data.album_title if release_data and release_data.album_title else meta.album or "",
+                    release_data.album_artist if release_data and release_data.album_artist else meta.album_artist or meta.artist or "",
+                    release_data.release_date if release_data else None,
                 )
         best_release_id = None
         best_score = 0.0
@@ -215,29 +220,58 @@ class AudioMetaDaemon:
                 best_release_id = rid
                 best_score = score
         ambiguous_cutoff = 0.05
-        if (
-            best_release_id
-            and sum(1 for score in release_scores.values() if best_score - score <= ambiguous_cutoff) > 1
-        ):
-            self._warn_ambiguous_release(
-                batch.directory,
-                [
-                    (
-                        rid,
-                        score,
-                        release_examples.get(rid, ("", ""))[0],
-                    )
-                    for rid, score in release_scores.items()
-                    if best_score - score <= ambiguous_cutoff
-                ],
-            )
-            return
+        ambiguous_candidates = [
+            (rid, score) for rid, score in release_scores.items() if best_release_id and best_score - score <= ambiguous_cutoff
+        ]
+        discogs_release_details = None
+        if best_release_id and len(ambiguous_candidates) > 1:
+            if self.interactive:
+                sample_meta = pending_results[0][0] if pending_results else None
+                selection = self._resolve_release_interactively(
+                    batch.directory,
+                    ambiguous_candidates,
+                    release_examples,
+                    sample_meta,
+                )
+                if selection is None:
+                    logger.warning("Skipping %s per user choice", batch.directory)
+                    return
+                provider, selection_id = selection
+                if provider == "discogs":
+                    if not self.discogs:
+                        logger.warning("Discogs provider unavailable; cannot use selection for %s", batch.directory)
+                        return
+                    discogs_release_details = self.discogs.get_release(int(selection_id))
+                    if not discogs_release_details:
+                        logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
+                        return
+                    best_release_id = None
+                else:
+                    best_release_id = selection_id
+                    best_score = next(score for rid, score in ambiguous_candidates if rid == selection_id)
+            else:
+                self._warn_ambiguous_release(
+                    batch.directory,
+                    [
+                        (
+                            rid,
+                            score,
+                            release_examples.get(rid, ("", "", None))[0],
+                        )
+                        for rid, score in ambiguous_candidates
+                    ],
+                )
+                return
         if best_release_id:
-            album_name, album_artist = release_examples.get(best_release_id, ("", ""))
+            example = release_examples.get(best_release_id, ("", "", None))
+            album_name, album_artist = example[0], example[1]
         else:
             album_name = album_artist = ""
 
         for meta, result, matched in pending_results:
+            if discogs_release_details:
+                self.discogs.apply_release_details(meta, discogs_release_details, allow_overwrite=True)
+                matched = True
             if not matched:
                 logger.warning("No metadata match for %s; leaving file untouched", meta.path)
                 continue
@@ -327,3 +361,67 @@ class AudioMetaDaemon:
             directory,
             entries,
         )
+
+    def _resolve_release_interactively(
+        self,
+        directory: Path,
+        mb_candidates: list[tuple[str, float]],
+        release_examples: dict[str, tuple[str, str, Optional[str]]],
+        sample_meta: Optional[TrackMetadata],
+    ) -> Optional[tuple[str, str]]:
+        options: list[dict] = []
+        idx = 1
+        for release_id, score in sorted(mb_candidates, key=lambda x: x[1], reverse=True):
+            title, artist, date = release_examples.get(release_id, ("", "", None))
+            year = date.split("-")[0] if date else "?"
+            label = f"[MusicBrainz] {title or 'Unknown Title'} ({year}) – {artist or 'Unknown Artist'} [score {score:.2f}] ({release_id})"
+            options.append({"idx": idx, "provider": "musicbrainz", "id": release_id, "label": label})
+            idx += 1
+        if sample_meta and self.discogs:
+            for cand in self._discogs_candidates(sample_meta):
+                label = f"[Discogs] {cand['title']} ({cand.get('year') or '?'}) – {cand.get('artist') or 'Unknown'} (release {cand['id']})"
+                options.append({"idx": idx, "provider": "discogs", "id": cand["id"], "label": label})
+                idx += 1
+        if not options:
+            logger.warning("No interactive options available for %s", directory)
+            return None
+        print(f"\nAmbiguous release for {directory}:")
+        for option in options:
+            print(f"  {option['idx']}. {option['label']}")
+        print("  0. Skip this directory")
+        while True:
+            choice = input("Select release (0=skip): ").strip()
+            if choice.lower() in {"0", "s", "skip"}:
+                return None
+            if not choice.isdigit():
+                print("Invalid selection; enter a number.")
+                continue
+            number = int(choice)
+            match = next((opt for opt in options if opt["idx"] == number), None)
+            if not match:
+                print("Selection out of range.")
+                continue
+            return match["provider"], match["id"]
+
+    def _discogs_candidates(self, meta: TrackMetadata) -> list[dict]:
+        if not self.discogs:
+            return []
+        guess = guess_metadata_from_path(meta.path)
+        artist = meta.album_artist or meta.artist or guess.artist
+        album = meta.album or guess.album
+        title = meta.title or guess.title
+        results = self.discogs.search_candidates(artist=artist, album=album, title=title, limit=5)
+        candidates = []
+        for item in results:
+            release_id = item.get("id")
+            if release_id is None:
+                continue
+            candidates.append(
+                {
+                    "id": release_id,
+                    "title": item.get("title"),
+                    "artist": item.get("artist") or item.get("label"),
+                    "year": item.get("year"),
+                }
+            )
+        return candidates

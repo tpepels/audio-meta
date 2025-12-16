@@ -87,6 +87,30 @@ class DiscogsClient:
             self.cache.set_discogs_search(cache_key, best)
         return best
 
+    def search_candidates(
+        self,
+        artist: Optional[str],
+        album: Optional[str],
+        title: Optional[str],
+        limit: int = 5,
+    ) -> List[dict]:
+        params = {
+            "token": self.token,
+            "type": "release",
+            "per_page": limit,
+        }
+        if artist:
+            params["artist"] = artist
+        if album:
+            params["release_title"] = album
+        if title:
+            params["track"] = title
+        url = f"https://api.discogs.com/database/search?{urllib.parse.urlencode(params)}"
+        data = self._request(url)
+        if not data:
+            return []
+        return data.get("results", [])
+
     def _fetch_release(self, release_id: int) -> Optional[dict]:
         if self.cache:
             cached = self.cache.get_discogs_release(release_id)
@@ -99,6 +123,20 @@ class DiscogsClient:
             logger.debug("Discogs cache miss; storing release %s", release_id)
             self.cache.set_discogs_release(release_id, data)
         return data
+
+    def get_release(self, release_id: int) -> Optional[dict]:
+        return self._fetch_release(release_id)
+
+    def apply_release_details(self, meta: TrackMetadata, release: dict, allow_overwrite: bool = True) -> None:
+        guess = guess_metadata_from_path(meta.path)
+        tags = self._read_basic_tags(meta.path)
+        artist = tags.get("artist") or guess.artist
+        title = tags.get("title") or guess.title or meta.title
+        track_number = guess.track_number
+        duration = meta.duration_seconds or self._probe_duration(meta.path)
+        track = self._match_track(release.get("tracklist", []), title, track_number, duration)
+        self._apply_release(meta, release, track, allow_overwrite)
+        meta.extra.setdefault("DISCOGS_RELEASE_ID", str(release.get("id")))
 
     def _match_track(
         self,
