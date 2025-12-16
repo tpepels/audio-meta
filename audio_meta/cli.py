@@ -138,7 +138,7 @@ def main() -> None:
     root_logger.addHandler(warn_buffer)
 
     warn_log_path = Path.cwd() / "audio-meta-warnings.log"
-    file_handler = logging.FileHandler(warn_log_path, encoding="utf-8")
+    file_handler = logging.FileHandler(warn_log_path, mode="w", encoding="utf-8")
     file_handler.setLevel(logging.WARNING)
     file_handler.setFormatter(ShortPathFormatter(LOG_FORMAT, display_roots))
     root_logger.addHandler(file_handler)
@@ -208,19 +208,24 @@ def rollback_moves(settings: Settings) -> None:
     restored = 0
     failed = 0
     for source_str, target_str in moves:
+        source_entry = source_str
         source = Path(source_str)
         target = Path(target_str)
         target_exists = _path_exists(target)
         if target_exists is None:
             logging.warning("Cannot restore %s -> %s: parent missing", target, source)
-            cache.delete_move(source)
+            cache.delete_move(source_entry)
             failed += 1
             continue
         if not target_exists:
             logging.warning("Cannot restore %s -> %s: target missing", target, source)
-            cache.delete_move(source)
+            cache.delete_move(source_entry)
             failed += 1
             continue
+        fitted_source = _fit_destination_path(source)
+        if fitted_source != source:
+            logging.info("Truncating restore path %s -> %s", source.name, fitted_source.name)
+            source = fitted_source
         source.parent.mkdir(parents=True, exist_ok=True)
         try:
             try:
@@ -231,7 +236,7 @@ def rollback_moves(settings: Settings) -> None:
                 shutil.move(str(target), str(source))
             stat = source.stat()
             cache.set_processed_file(source, stat.st_mtime_ns, stat.st_size, organized=False)
-            cache.delete_move(source)
+            cache.delete_move(source_entry)
             restored += 1
             logging.info("Restored %s -> %s", target, source)
         except Exception as exc:  # pragma: no cover - best effort
@@ -276,6 +281,10 @@ def cleanup_directories(settings: Settings, dry_run: bool = False) -> None:
         print(f"Deleted {removed_files} files with non-audio content.")
 
 
+ELLIPSIS = "…"
+MAX_BASENAME_BYTES = 255
+
+
 def _directory_has_audio_files(path: Path, extensions: set[str]) -> bool:
     if not extensions:
         return True
@@ -304,6 +313,30 @@ def _path_exists(path: Path) -> Optional[bool]:
         except FileNotFoundError:
             return None
         return False
+
+
+def _fit_destination_path(path: Path) -> Path:
+    name_bytes = path.name.encode("utf-8")
+    if len(name_bytes) <= MAX_BASENAME_BYTES:
+        return path
+    suffix_bytes = path.suffix.encode("utf-8")
+    ellipsis_bytes = ELLIPSIS.encode("utf-8")
+    allowed = MAX_BASENAME_BYTES - len(suffix_bytes) - len(ellipsis_bytes)
+    if allowed < 0:
+        allowed = 0
+    stem = path.stem or "file"
+    truncated = stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or "file"
+    candidate = path.with_name(f"{truncated}{ELLIPSIS}{path.suffix}")
+    counter = 1
+    while candidate.exists():
+        extra = f"_{counter}"
+        extra_bytes = extra.encode("utf-8")
+        allowed = MAX_BASENAME_BYTES - len(suffix_bytes) - len(ellipsis_bytes) - len(extra_bytes)
+        allowed = max(0, allowed)
+        truncated = stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or f"file{counter}"
+        candidate = path.with_name(f"{truncated}{extra}{ELLIPSIS}{path.suffix}")
+        counter += 1
+    return candidate
 
 
 def _safe_rename(src: Path, dst: Path) -> None:
