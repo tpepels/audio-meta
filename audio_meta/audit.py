@@ -181,6 +181,8 @@ class LibraryAuditor:
 
     def collect_singletons(self) -> List[SingletonEntry]:
         entries: List[SingletonEntry] = []
+        target_map: Dict[str, list[tuple[Path, int]]] = defaultdict(list)
+        pending: list[dict] = []
         for root in self.library_roots:
             if not root.exists():
                 continue
@@ -191,45 +193,69 @@ class LibraryAuditor:
                     for name in filenames
                     if Path(name).suffix.lower() in self.extensions
                 ]
-                if len(audio_files) != 1:
-                    continue
-                if self.cache and self.cache.is_directory_ignored(directory):
+                if not audio_files:
                     continue
                 file_path = audio_files[0]
-                if not file_path.exists():
-                    continue
                 meta = TrackMetadata(path=file_path)
                 tags = self.tag_writer.read_existing_tags(meta) or {}
                 self._apply_tag_values(meta, tags)
                 classical = self.heuristics.evaluate(meta).is_classical
                 canonical = self.organizer.canonical_target(meta, classical)
-                target: Optional[Path] = None
-                release_home: Optional[Path] = None
-                release_id: Optional[str] = None
+                key = str(canonical.parent) if canonical else None
+                if key:
+                    target_map[key].append((directory, len(audio_files)))
+                if len(audio_files) != 1:
+                    continue
+                if self.cache and self.cache.is_directory_ignored(directory):
+                    continue
                 release_entry = self.cache.get_directory_release(directory) if self.cache else None
+                release_id: Optional[str] = None
                 if release_entry:
                     _, release_id, _ = release_entry
                 if not release_id and meta.musicbrainz_release_id:
                     release_id = meta.musicbrainz_release_id
-                if canonical and canonical != file_path:
-                    target = canonical
-                else:
-                    release_home = self._find_release_home(release_id, directory)
-                    if release_home and release_home != directory:
-                        filename = canonical.name if canonical else file_path.name
-                        target = self.organizer._truncate_target(release_home / filename)
-                entries.append(
-                    SingletonEntry(
-                        directory=directory,
-                        file_path=file_path,
-                        meta=meta,
-                        is_classical=classical,
-                        target=target,
-                        canonical_path=canonical,
-                        release_home=release_home,
-                        release_id=release_id,
-                    )
+                pending.append(
+                    {
+                        "directory": directory,
+                        "file_path": file_path,
+                        "meta": meta,
+                        "classical": classical,
+                        "canonical": canonical,
+                        "release_id": release_id,
+                        "key": key,
+                    }
                 )
+        for record in pending:
+            directory = record["directory"]
+            file_path = record["file_path"]
+            meta = record["meta"]
+            canonical = record["canonical"]
+            release_id = record["release_id"]
+            key = record["key"]
+            target: Optional[Path] = None
+            release_home = self._find_release_home(release_id, directory)
+            if canonical and canonical != file_path:
+                target = canonical
+            elif release_home and release_home != directory:
+                filename = canonical.name if canonical else file_path.name
+                target = self.organizer._truncate_target(release_home / filename)
+            elif key:
+                release_home = self._best_directory_for_key(key, directory, target_map)
+                if release_home and release_home != directory:
+                    filename = canonical.name if canonical else file_path.name
+                    target = self.organizer._truncate_target(release_home / filename)
+            entries.append(
+                SingletonEntry(
+                    directory=directory,
+                    file_path=file_path,
+                    meta=meta,
+                    is_classical=record["classical"],
+                    target=target,
+                    canonical_path=canonical,
+                    release_home=release_home,
+                    release_id=release_id,
+                )
+            )
         return entries
 
     def _find_release_home(self, release_id: Optional[str], current_dir: Path) -> Optional[Path]:
@@ -257,3 +283,17 @@ class LibraryAuditor:
                 if Path(name).suffix.lower() in self.extensions:
                     count += 1
         return count
+
+    def _best_directory_for_key(
+        self, key: str, current_dir: Path, target_map: Dict[str, list[tuple[Path, int]]]
+    ) -> Optional[Path]:
+        candidates = target_map.get(key) or []
+        best_dir: Optional[Path] = None
+        best_count = 0
+        for directory, count in candidates:
+            if directory == current_dir:
+                continue
+            if count > best_count:
+                best_dir = directory
+                best_count = count
+        return best_dir
