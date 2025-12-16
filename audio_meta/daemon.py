@@ -1043,16 +1043,6 @@ class AudioMetaDaemon:
                 return entry
         return None
 
-    def _path_within_library(self, path: Path) -> bool:
-        try:
-            candidate = path.resolve()
-        except FileNotFoundError:
-            candidate = path
-        for root in self._library_roots:
-            if candidate == root or root in candidate.parents:
-                return True
-        return False
-
     def _directory_release_keys(
         self,
         directory: Path,
@@ -1060,9 +1050,9 @@ class AudioMetaDaemon:
         album_hint: Optional[str] = None,
     ) -> list[str]:
         keys: list[str] = []
-        for key in self._path_chain_keys(directory):
-            if key not in keys:
-                keys.append(key)
+        for path_key in self._release_path_keys(directory):
+            if path_key not in keys:
+                keys.append(path_key)
         path_artist, path_album = self._path_based_hints(directory)
         final_artist = artist_hint or path_artist
         final_album = album_hint or path_album
@@ -1071,19 +1061,22 @@ class AudioMetaDaemon:
             keys.append(canonical)
         return keys
 
-    def _path_chain_keys(self, directory: Path) -> list[str]:
-        keys: list[str] = []
+    def _release_path_keys(self, directory: Path) -> list[str]:
+        paths: list[Path] = []
         try:
-            current = directory.resolve()
+            resolved = directory.resolve()
         except FileNotFoundError:
-            current = directory
-        while True:
-            keys.append(str(current))
-            parent = current.parent
-            if parent == current or not self._path_within_library(parent):
-                break
-            current = parent
-        return keys
+            resolved = directory
+        paths.append(resolved)
+        album_root = self._album_root(directory)
+        if album_root != directory:
+            try:
+                root_resolved = album_root.resolve()
+            except FileNotFoundError:
+                root_resolved = album_root
+            if root_resolved not in paths:
+                paths.append(root_resolved)
+        return [str(path) for path in paths]
 
     def _path_based_hints(self, directory: Path) -> tuple[Optional[str], Optional[str]]:
         names: list[str] = []

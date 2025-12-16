@@ -143,6 +143,24 @@ class MetadataCache:
             self._conn.execute("UPDATE processed_files SET organized = 0")
             self._conn.commit()
 
+    def list_moves(self) -> list[tuple[str, str]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT source_path, target_path FROM moves ORDER BY moved_at DESC"
+            )
+            rows = cursor.fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def delete_move(self, source: Path | str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM moves WHERE source_path = ?", (str(source),))
+            self._conn.commit()
+
+    def clear_directory_releases(self) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM directory_releases")
+            self._conn.commit()
+
     def get_directory_release(self, directory: Path | str) -> Optional[tuple[str, str, float]]:
         with self._lock:
             cursor = self._conn.execute(

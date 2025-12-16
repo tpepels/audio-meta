@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
+import errno
+import shutil
 
 from .config import Settings, find_config
 from .daemon import AudioMetaDaemon
@@ -54,6 +56,11 @@ def main() -> None:
         help="Clear recorded move history before running",
     )
     parser.add_argument(
+        "--rollback-moves",
+        action="store_true",
+        help="Move files back to their original locations using recorded move history, then exit",
+    )
+    parser.add_argument(
         "--dry-run-output",
         type=Path,
         help="Record proposed tag changes to this file (JSON Lines) without editing files",
@@ -87,6 +94,9 @@ def main() -> None:
     logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     config_path = find_config(args.config)
     settings = Settings.load(config_path)
+    if args.rollback_moves:
+        rollback_moves(settings)
+        return
     validate_providers(settings.providers)
     if args.clear_move_cache:
         cache = MetadataCache(settings.daemon.cache_path)
@@ -109,3 +119,42 @@ def main() -> None:
             for line in warn_buffer.records:
                 print(f" - {line}")
             print(f"\nFull warning log: {warn_log_path}")
+
+
+def rollback_moves(settings: Settings) -> None:
+    cache = MetadataCache(settings.daemon.cache_path)
+    moves = cache.list_moves()
+    if not moves:
+        print("No recorded moves to rollback.")
+        cache.clear_directory_releases()
+        cache.close()
+        return
+    print(f"Rolling back {len(moves)} recorded move(s)...")
+    restored = 0
+    failed = 0
+    for source_str, target_str in moves:
+        source = Path(source_str)
+        target = Path(target_str)
+        if not target.exists():
+            logging.warning("Cannot restore %s -> %s: target missing", target, source)
+            failed += 1
+            continue
+        source.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            try:
+                target.rename(source)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                shutil.move(str(target), str(source))
+            stat = source.stat()
+            cache.set_processed_file(source, stat.st_mtime_ns, stat.st_size, organized=False)
+            cache.delete_move(source)
+            restored += 1
+            logging.info("Restored %s -> %s", target, source)
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.error("Failed to restore %s -> %s: %s", target, source, exc)
+            failed += 1
+    cache.clear_directory_releases()
+    cache.close()
+    print(f"Rollback complete: {restored} restored, {failed} failed.")
