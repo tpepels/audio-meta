@@ -124,6 +124,7 @@ class AudioMetaDaemon:
         self.interactive = interactive
         self.skip_reasons: dict[Path, str] = {}
         self._skip_lock = Lock()
+        self._library_roots = [root.resolve() for root in settings.library.roots]
         if self.dry_run_recorder:
             logger.debug("Dry-run mode enabled; writing preview to %s", dry_run_output)
 
@@ -188,7 +189,7 @@ class AudioMetaDaemon:
         release_examples: dict[str, ReleaseExample] = {}
         dir_track_count, dir_year = self._directory_context(batch.directory, batch.files)
         cached_discogs_release_details = None
-        cached_release_entry = self.cache.get_directory_release(batch.directory)
+        cached_release_entry = self._cached_release_for_directory(batch.directory)
         if cached_release_entry:
             provider, cached_release_id, cached_score = cached_release_entry
             if provider == "musicbrainz":
@@ -286,7 +287,7 @@ class AudioMetaDaemon:
                     logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                     return
                 self._apply_discogs_release_details(pending_results, discogs_release_details)
-                self.cache.set_directory_release(batch.directory, "discogs", selection_id, 1.0)
+                self._persist_directory_release(batch.directory, "discogs", selection_id, 1.0)
             else:
                 applied = self._apply_musicbrainz_release_selection(batch.directory, selection_id, pending_results)
                 if not applied:
@@ -342,7 +343,7 @@ class AudioMetaDaemon:
                         self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
                         logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                         return
-                    self.cache.set_directory_release(batch.directory, "discogs", selection_id, 1.0)
+                    self._persist_directory_release(batch.directory, "discogs", selection_id, 1.0)
                     best_release_id = None
                 else:
                     best_release_id = selection_id
@@ -367,7 +368,7 @@ class AudioMetaDaemon:
             example = release_examples.get(best_release_id)
             album_name = example.title if example else ""
             album_artist = example.artist if example else ""
-            self.cache.set_directory_release(batch.directory, "musicbrainz", best_release_id, best_score)
+            self._persist_directory_release(batch.directory, "musicbrainz", best_release_id, best_score)
         else:
             album_name = album_artist = ""
 
@@ -649,8 +650,22 @@ class AudioMetaDaemon:
 
     def _directory_hints(self, sample_meta: TrackMetadata, directory: Path) -> tuple[Optional[str], Optional[str]]:
         guess = guess_metadata_from_path(sample_meta.path)
-        artist_hint = sample_meta.album_artist or sample_meta.artist or guess.artist or directory.parent.name
-        album_hint = sample_meta.album or guess.album or directory.name
+        artist_hint = sample_meta.album_artist or sample_meta.artist or guess.artist
+        if not artist_hint and directory.parent != directory:
+            artist_hint = directory.parent.name
+        album_hint = sample_meta.album or guess.album
+        if not album_hint:
+            names = [directory.name]
+            if directory.parent != directory:
+                names.insert(0, directory.parent.name)
+            if directory.parent.parent != directory.parent:
+                names.insert(0, directory.parent.parent.name)
+            for name in names:
+                if name and not self._looks_like_disc_folder(name):
+                    album_hint = name
+                    break
+            if not album_hint and names:
+                album_hint = names[-1]
         return artist_hint, album_hint
 
     def _apply_discogs_release_details(self, pending_results: list[PendingResult], release_details: dict) -> None:
@@ -693,6 +708,8 @@ class AudioMetaDaemon:
                 pending.result = lookup
                 pending.matched = True
                 applied = True
+        if applied:
+            self._persist_directory_release(directory, "musicbrainz", release_id, 1.0)
         return applied
 
     def _discogs_candidates(self, meta: TrackMetadata) -> list[dict]:
@@ -816,3 +833,42 @@ class AudioMetaDaemon:
         print("\n\033[33mDirectories skipped:\033[0m")
         for directory, reason in sorted(entries):
             print(f" - {directory}: {reason}")
+
+    def _cached_release_for_directory(self, directory: Path) -> Optional[tuple[str, str, float]]:
+        try:
+            current = directory.resolve()
+        except FileNotFoundError:
+            current = directory
+        while True:
+            entry = self.cache.get_directory_release(current)
+            if entry:
+                return entry
+            parent = current.parent
+            if parent == current or not self._path_within_library(parent):
+                break
+            current = parent
+        return None
+
+    def _path_within_library(self, path: Path) -> bool:
+        try:
+            candidate = path.resolve()
+        except FileNotFoundError:
+            candidate = path
+        for root in self._library_roots:
+            if candidate == root or root in candidate.parents:
+                return True
+        return False
+
+    def _persist_directory_release(self, directory: Path, provider: str, release_id: str, score: float) -> None:
+        self.cache.set_directory_release(directory, provider, release_id, score)
+        parent = directory.parent
+        if (
+            parent != directory
+            and self._looks_like_disc_folder(directory.name)
+            and self._path_within_library(parent)
+        ):
+            self.cache.set_directory_release(parent, provider, release_id, score)
+
+    @staticmethod
+    def _looks_like_disc_folder(name: str) -> bool:
+        return bool(re.search(r"(?:^|\s)(disc|cd|disk)\s*\d", name, re.IGNORECASE))
