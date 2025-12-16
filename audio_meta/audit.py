@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from collections import defaultdict
 from pathlib import Path
+import unicodedata
+import re
 from typing import Dict, List, Optional
 
 from .cache import MetadataCache
@@ -181,7 +183,7 @@ class LibraryAuditor:
 
     def collect_singletons(self) -> List[SingletonEntry]:
         entries: List[SingletonEntry] = []
-        target_map: Dict[str, list[tuple[Path, int]]] = defaultdict(list)
+        group_map: Dict[tuple[str, str, str], list[tuple[Path, int]]] = defaultdict(list)
         pending: list[dict] = []
         for root in self.library_roots:
             if not root.exists():
@@ -201,9 +203,9 @@ class LibraryAuditor:
                 self._apply_tag_values(meta, tags)
                 classical = self.heuristics.evaluate(meta).is_classical
                 canonical = self.organizer.canonical_target(meta, classical)
-                key = str(canonical.parent) if canonical else None
-                if key:
-                    target_map[key].append((directory, len(audio_files)))
+                group_key = self._group_key(meta, classical)
+                if group_key:
+                    group_map[group_key].append((directory, len(audio_files)))
                 if len(audio_files) != 1:
                     continue
                 if self.cache and self.cache.is_directory_ignored(directory):
@@ -222,7 +224,7 @@ class LibraryAuditor:
                         "classical": classical,
                         "canonical": canonical,
                         "release_id": release_id,
-                        "key": key,
+                        "group_key": group_key,
                     }
                 )
         for record in pending:
@@ -231,7 +233,7 @@ class LibraryAuditor:
             meta = record["meta"]
             canonical = record["canonical"]
             release_id = record["release_id"]
-            key = record["key"]
+            group_key = record["group_key"]
             target: Optional[Path] = None
             release_home = self._find_release_home(release_id, directory)
             if canonical and canonical != file_path:
@@ -239,8 +241,8 @@ class LibraryAuditor:
             elif release_home and release_home != directory:
                 filename = canonical.name if canonical else file_path.name
                 target = self.organizer._truncate_target(release_home / filename)
-            elif key:
-                release_home = self._best_directory_for_key(key, directory, target_map)
+            elif group_key:
+                release_home = self._best_directory_for_group(group_key, directory, group_map)
                 if release_home and release_home != directory:
                     filename = canonical.name if canonical else file_path.name
                     target = self.organizer._truncate_target(release_home / filename)
@@ -256,6 +258,42 @@ class LibraryAuditor:
                     release_id=release_id,
                 )
             )
+
+        return entries
+
+    def _group_key(self, meta: TrackMetadata, classical: bool) -> Optional[tuple[str, str, str]]:
+        album_key = self._normalize_token(meta.album)
+        artist_source = meta.album_artist or meta.artist
+        artist_key = self._normalize_token(artist_source)
+        composer_key = self._normalize_token(meta.composer if classical else None)
+
+        if not album_key and not artist_key and not composer_key:
+            return None
+
+        return (composer_key, album_key, artist_key)
+
+    def _best_directory_for_group(
+        self,
+        group_key: tuple[str, str, str],
+        current: Path,
+        group_map: Dict[tuple[str, str, str], list[tuple[Path, int]]],
+    ) -> Optional[Path]:
+        candidates = [
+            entry for entry in group_map.get(group_key, []) if entry[0] != current
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (-item[1], len(item[0].parts), str(item[0])))
+        return candidates[0][0]
+
+    def _normalize_token(self, value: Optional[str]) -> str:
+        if not value:
+            return ""
+        normalized = unicodedata.normalize("NFKD", value)
+        ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+        ascii_only = re.sub(r"[&;,/]+", " ", ascii_only)
+        ascii_only = re.sub(r"\s+", " ", ascii_only).strip().lower()
+        return ascii_only
         return entries
 
     def _find_release_home(self, release_id: Optional[str], current_dir: Path) -> Optional[Path]:
