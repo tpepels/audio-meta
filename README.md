@@ -51,7 +51,7 @@ organizer:
 
 1. **Run a full pass**  
    ```
-   audio-meta run --config config.yaml
+   audio-meta --config config.yaml run
    ```
    This command performs a scan (tagging + organizer moves) and then runs the audit with `--fix`, which relocates any straggler files whose tags disagree with their directory.
 
@@ -65,17 +65,22 @@ organizer:
 
 | Command | Description |
 | ------- | ----------- |
-| `audio-meta scan --config config.yaml` | Run only the scanner (no audit). Use when you want to inspect before fixing. |
-| `audio-meta audit --config config.yaml` | Report misplaced files based on tags; add `--fix` to auto-move them. |
-| `audio-meta cleanup --config config.yaml [--dry-run]` | Remove directories that contain no audio files (e.g., leftover artwork). |
-| `audio-meta rollback-moves --config config.yaml` | Undo the most recent organizer moves using the move history stored in the cache. |
-| `audio-meta daemon --config config.yaml` | Start the filesystem watcher to process new files continuously. |
+| `audio-meta --config config.yaml scan` | Run only the scanner (no audit). Use when you want to inspect before fixing. |
+| `audio-meta --config config.yaml audit` | Report misplaced files based on tags; add `--fix` to auto-move them. |
+| `audio-meta --config config.yaml cleanup [--dry-run]` | Remove directories that contain no audio files (e.g., leftover artwork). |
+| `audio-meta --config config.yaml rollback-moves` | Undo the most recent organizer moves using the move history stored in the cache. |
+| `audio-meta --config config.yaml daemon` | Start the filesystem watcher to process new files continuously. |
 
-Optional flags that apply to all commands:
+Useful global flags (place them before the subcommand):
 
-- `--log-level DEBUG` for verbose tracing.
-- `--disable-release-cache` if you need to force a fresh lookup (normally not required).
-- `--dry-run-output path.jsonl` to record all planned tag changes and moves without touching files.
+- `--config config.yaml` – select the configuration file (required).
+- `--log-level WARN|INFO|DEBUG` – control verbosity (defaults to INFO).
+- `--dry-run-output path.jsonl` – emit JSON lines describing planned changes without touching files.
+
+Advanced / troubleshooting flags:
+
+- `--disable-release-cache` – ignore cached directory-release matches for this run.
+- `--reset-release-cache` – drop all stored directory-release matches before starting.
 
 ## Deferred prompts & manual selections
 

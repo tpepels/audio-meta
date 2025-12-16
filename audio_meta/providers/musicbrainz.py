@@ -558,12 +558,18 @@ class MusicBrainzClient:
         if not value:
             return None
         tokens = [chunk.strip() for chunk in re.split(r"[;,]+", value) if chunk.strip()]
+        connectors = {"&", "and", "with", "feat", "featuring", "+"}
         unique: List[str] = []
         for token in tokens:
             base = token.split(" (", 1)[0].strip()
-            if base and base not in unique:
+            if not base:
+                continue
+            if base.lower() in connectors:
+                continue
+            if base not in unique:
                 unique.append(base)
         return ", ".join(unique) if unique else None
+
     def _title_similarity(self, first: Optional[str], second: Optional[str]) -> float:
         if not first or not second:
             return 0.0

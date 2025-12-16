@@ -36,6 +36,10 @@ class ClassicalHeuristics:
         decision = self.evaluate(meta)
         if not decision.is_classical:
             return False
+        if not meta.composer:
+            fallback = meta.album_artist or meta.artist
+            if fallback:
+                meta.composer = fallback
         if meta.composer:
             original_artist = meta.artist
             meta.album_artist = meta.composer
@@ -47,13 +51,25 @@ class ClassicalHeuristics:
             if not performer_names:
                 performer_names.append(original_artist or meta.composer)
             meta.artist = "; ".join(performer_names)
-        if meta.work and meta.title and meta.work not in meta.title:
+        if meta.work and meta.title and not self._work_already_in_title(meta.work, meta.title):
             meta.title = f"{meta.work}: {meta.title}"
         if meta.performers:
             meta.extra["PERFORMERS"] = "; ".join(meta.performers)
         if meta.conductor:
             meta.extra["CONDUCTOR"] = meta.conductor
         return True
+
+    @staticmethod
+    def _normalize_for_compare(value: str) -> str:
+        simplified = re.sub(r"[^\w]+", " ", value.lower())
+        return re.sub(r"\s+", " ", simplified).strip()
+
+    def _work_already_in_title(self, work: str, title: str) -> bool:
+        work_norm = self._normalize_for_compare(work)
+        title_norm = self._normalize_for_compare(title)
+        if not work_norm or not title_norm:
+            return False
+        return work_norm in title_norm
 
     @staticmethod
     def _match_keyword(value: str, keywords: Iterable[str]) -> bool:
