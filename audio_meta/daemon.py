@@ -829,7 +829,14 @@ class AudioMetaDaemon:
             options.append({"idx": idx, "provider": provider, "id": release_id, "label": label, "score": score})
             idx += 1
         if sample_meta and self.discogs:
+            seen_pairs = {(opt["provider"], opt["id"]) for opt in options}
             for cand in self._discogs_candidates(sample_meta):
+                release_id = str(cand.get("id") or "").strip()
+                if not release_id:
+                    continue
+                pair = ("discogs", release_id)
+                if pair in seen_pairs:
+                    continue
                 label = self._format_option_label(
                     idx,
                     "DG",
@@ -846,11 +853,12 @@ class AudioMetaDaemon:
                     {
                         "idx": idx,
                         "provider": "discogs",
-                        "id": cand["id"],
+                        "id": release_id,
                         "label": label,
                         "score": cand.get("score", 0.0),
                     }
                 )
+                seen_pairs.add(pair)
                 idx += 1
         if not options:
             self._record_skip(directory, "No interactive release options available")
@@ -1075,10 +1083,15 @@ class AudioMetaDaemon:
                 track_count = len([t for t in tracklist if t.get("type_", "track") == "track"])
             formats, disc_count = self._discogs_format_details(item, details)
             artist_name = self._discogs_release_artist(details) or item.get("artist") or item.get("label")
+            title_hint = (details or {}).get("title") or item.get("title")
+            artist_similarity = self._token_overlap_ratio(artist, artist_name)
+            album_similarity = self._token_overlap_ratio(album, title_hint)
+            if artist_similarity < 0.2 and album_similarity < 0.2:
+                continue
             candidates.append(
                 {
                     "id": release_id,
-                    "title": (details or {}).get("title") or item.get("title"),
+                    "title": title_hint,
                     "artist": artist_name,
                     "year": (details or {}).get("year") or item.get("year"),
                     "track_count": track_count,
@@ -1375,6 +1388,26 @@ class AudioMetaDaemon:
         cleaned = cleaned.lower()
         cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
         return cleaned.strip()
+
+    def _token_overlap_ratio(self, expected: Optional[str], candidate: Optional[str]) -> float:
+        expected_tokens = self._tokenize(expected)
+        if not expected_tokens:
+            return 0.0
+        candidate_tokens = set(self._tokenize(candidate))
+        if not candidate_tokens:
+            return 0.0
+        overlap = sum(1 for token in expected_tokens if token in candidate_tokens)
+        return overlap / len(expected_tokens)
+
+    @staticmethod
+    def _tokenize(value: Optional[str]) -> list[str]:
+        if not value:
+            return []
+        cleaned = unicodedata.normalize("NFKD", value)
+        cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
+        cleaned = cleaned.lower()
+        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+        return [token for token in cleaned.split() if token]
 
     def _display_path(self, path: Path | str) -> str:
         try:
