@@ -249,7 +249,11 @@ def rollback_moves(settings: Settings) -> None:
 
 def audit_library(settings: Settings, fix: bool = False) -> None:
     """Run the tag-based relocation audit, optionally auto-fixing misplaced files."""
-    LibraryAuditor(settings).run(fix=fix)
+    cache = MetadataCache(settings.daemon.cache_path)
+    try:
+        LibraryAuditor(settings, cache=cache).run(fix=fix)
+    finally:
+        cache.close()
 
 
 def cleanup_directories(settings: Settings, dry_run: bool = False) -> None:

@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .cache import MetadataCache
 from .classical import ClassicalHeuristics
 from .config import Settings
 from .heuristics import guess_metadata_from_path
@@ -19,9 +20,14 @@ logger = logging.getLogger(__name__)
 class LibraryAuditor:
     """Detects and optionally fixes files that are stored under the wrong artist/album."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, cache: Optional[MetadataCache] = None) -> None:
         self.settings = settings
-        self.organizer = Organizer(settings.organizer, settings.library)
+        self._cache = cache
+        self._owns_cache = False
+        if self._cache is None:
+            self._cache = MetadataCache(settings.daemon.cache_path)
+            self._owns_cache = True
+        self.organizer = Organizer(settings.organizer, settings.library, cache=self._cache)
         # We always want to be able to compute destinations even if organizer is disabled globally.
         self.organizer.enabled = True
         self.heuristics = ClassicalHeuristics(settings.classical)
@@ -72,6 +78,8 @@ class LibraryAuditor:
                         self.organizer.cleanup_source_directory(current.parent)
                         fixed += 1
         self._report(mismatches, singletons, checked_files, fixed, fix)
+        if self._owns_cache and self._cache:
+            self._cache.close()
 
     def _apply_tag_values(self, meta: TrackMetadata, tags: dict[str, Optional[str]]) -> None:
         guess = guess_metadata_from_path(meta.path)

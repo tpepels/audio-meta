@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Optional, Set
 
+from .cache import MetadataCache
 from .config import LibrarySettings, OrganizerSettings
 from .heuristics import guess_metadata_from_path
 from .models import TrackMetadata
@@ -21,7 +22,12 @@ UNKNOWN_ALBUM = "Unknown Album"
 
 
 class Organizer:
-    def __init__(self, settings: OrganizerSettings, library_settings: LibrarySettings) -> None:
+    def __init__(
+        self,
+        settings: OrganizerSettings,
+        library_settings: LibrarySettings,
+        cache: Optional[MetadataCache] = None,
+    ) -> None:
         self.settings = settings
         self.enabled = settings.enabled
         default_root = library_settings.roots[0] if library_settings.roots else Path.cwd()
@@ -29,6 +35,8 @@ class Organizer:
         self.release_composers: Dict[str, Set[str]] = defaultdict(set)
         self.library_roots = [root.resolve() for root in library_settings.roots]
         self.audio_extensions = {ext.lower() for ext in library_settings.include_extensions}
+        self.cache = cache
+        self._layout_cache: Dict[str, str] = {}
 
     def plan_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if not self.enabled:
@@ -130,16 +138,15 @@ class Organizer:
         composer = self._safe(meta.composer, UNKNOWN_ARTIST)
         performer = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
-        if self.settings.classical_mixed_strategy != "performer_album" and composer == performer:
-            return self.target_root / composer / album
-        if composer:
-            release_key = self._release_key(meta)
-            composers = self.release_composers[release_key]
-            composers.add(composer)
-            if self.settings.classical_mixed_strategy == "performer_album" and len(composers) > 1:
-                return self.target_root / performer / album
-            return self.target_root / composer / performer / album
-        return self.target_root / performer / album
+        layout_key = self._layout_cache_key(meta)
+        cached_layout = self._get_cached_layout(layout_key)
+        if cached_layout:
+            return self._path_for_layout(cached_layout, composer, performer, album)
+
+        layout = self._choose_classical_layout(meta, composer, performer)
+        if layout_key:
+            self._remember_layout(layout_key, layout)
+        return self._path_for_layout(layout, composer, performer, album)
 
     def _release_key(self, meta: TrackMetadata) -> str:
         if meta.musicbrainz_release_id:
@@ -147,6 +154,59 @@ class Organizer:
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
         artist = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         return f"{artist}|{album}"
+
+    def _layout_cache_key(self, meta: TrackMetadata) -> Optional[str]:
+        if meta.musicbrainz_release_id:
+            return meta.musicbrainz_release_id
+        release_key = self._release_key(meta)
+        return f"fallback:{release_key}" if release_key else None
+
+    def _composer_tracker_key(self, meta: TrackMetadata) -> str:
+        return meta.musicbrainz_release_id or self._release_key(meta)
+
+    def _get_cached_layout(self, key: Optional[str]) -> Optional[str]:
+        if not key:
+            return None
+        if key in self._layout_cache:
+            return self._layout_cache[key]
+        if self.cache:
+            layout = self.cache.get_release_layout(key)
+            if layout:
+                self._layout_cache[key] = layout
+                return layout
+        return None
+
+    def _remember_layout(self, key: Optional[str], layout: str) -> None:
+        if not key:
+            return
+        self._layout_cache[key] = layout
+        if self.cache:
+            self.cache.set_release_layout(key, layout)
+
+    def _choose_classical_layout(self, meta: TrackMetadata, composer: str, performer: str) -> str:
+        if not composer or composer == UNKNOWN_ARTIST:
+            return "performer_album"
+
+        strategy = self.settings.classical_mixed_strategy
+
+        if strategy != "performer_album" and composer == performer:
+            return "composer_album"
+
+        tracker_key = self._composer_tracker_key(meta)
+        composers = self.release_composers[tracker_key]
+        composers.add(composer)
+        if strategy == "performer_album" and len(composers) > 1:
+            return "performer_album"
+        if composer == performer:
+            return "composer_album"
+        return "composer_performer_album"
+
+    def _path_for_layout(self, layout: str, composer: str, performer: str, album: str) -> Path:
+        if layout == "composer_album":
+            return self.target_root / composer / album
+        if layout == "composer_performer_album":
+            return self.target_root / composer / performer / album
+        return self.target_root / performer / album
 
     @staticmethod
     def _safe(value: Optional[str], fallback: str) -> str:

@@ -81,6 +81,15 @@ class MetadataCache:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS release_layouts (
+                release_key TEXT PRIMARY KEY,
+                layout TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS ignored_directories (
                 directory_path TEXT PRIMARY KEY,
                 reason TEXT,
@@ -199,6 +208,7 @@ class MetadataCache:
             self._conn.execute("DELETE FROM directory_releases")
             self._conn.execute("DELETE FROM directory_hashes")
             self._conn.execute("DELETE FROM hash_releases")
+            self._conn.execute("DELETE FROM release_layouts")
             self._conn.execute("DELETE FROM deferred_prompts")
             self._conn.commit()
 
@@ -367,3 +377,24 @@ class MetadataCache:
             )
             rows = cursor.fetchall()
         return [(row[0], row[1]) for row in rows]
+
+    def get_release_layout(self, release_key: str) -> Optional[str]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT layout FROM release_layouts WHERE release_key = ?",
+                (release_key,),
+            )
+            row = cursor.fetchone()
+        return row[0] if row else None
+
+    def set_release_layout(self, release_key: str, layout: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO release_layouts(release_key, layout, updated_at)
+                VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(release_key) DO UPDATE SET layout=excluded.layout, updated_at=excluded.updated_at
+                """,
+                (release_key, layout),
+            )
+            self._conn.commit()

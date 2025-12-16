@@ -139,7 +139,7 @@ class AudioMetaDaemon:
                 logger.warning("Failed to initialise Discogs client: %s", exc)
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
-        self.organizer = Organizer(settings.organizer, settings.library)
+        self.organizer = Organizer(settings.organizer, settings.library, cache=self.cache)
         self.queue: asyncio.Queue[DirectoryBatch] = asyncio.Queue()
         self.observer: Observer | None = None
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
