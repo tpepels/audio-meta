@@ -323,7 +323,12 @@ class AudioMetaDaemon:
                     album_hint=discogs_release_details.get("title"),
                 )
             else:
-                applied = self._apply_musicbrainz_release_selection(batch.directory, selection_id, pending_results)
+                applied = self._apply_musicbrainz_release_selection(
+                    batch.directory,
+                    selection_id,
+                    pending_results,
+                    force=True,
+                )
                 if not applied:
                     self._record_skip(batch.directory, f"Manual MusicBrainz release {selection_id} did not match tracks")
                     logger.warning("Manual MusicBrainz release %s did not match tracks in %s", selection_id, batch.directory)
@@ -396,6 +401,12 @@ class AudioMetaDaemon:
                 else:
                     best_release_id = selection_id
                     best_score = next(score for rid, score in ambiguous_candidates if rid == selection_id)
+                    self._apply_musicbrainz_release_selection(
+                        batch.directory,
+                        best_release_id,
+                        pending_results,
+                        force=True,
+                    )
             else:
                 self._warn_ambiguous_release(
                     batch.directory,
@@ -792,6 +803,7 @@ class AudioMetaDaemon:
         directory: Path,
         release_id: str,
         pending_results: list[PendingResult],
+        force: bool = False,
     ) -> bool:
         self.musicbrainz.release_tracker.register(
             directory,
@@ -800,11 +812,17 @@ class AudioMetaDaemon:
         )
         self.musicbrainz.release_tracker.remember_release(directory, release_id, 1.0)
         release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+        if not release_data:
+            return False
+        if force:
+            release_data.claimed.clear()
         applied = False
         for pending in pending_results:
-            if pending.matched:
+            if pending.matched and not force:
                 applied = True
                 continue
+            if force:
+                pending.matched = False
             if not pending.meta.duration_seconds:
                 duration = self.musicbrainz._probe_duration(pending.meta.path)
                 if duration:
