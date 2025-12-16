@@ -45,6 +45,8 @@ class ReleaseData:
         self.album_title = album_title
         self.album_artist = album_artist
         self.release_date = release_date
+        self.disc_count = 0
+        self.formats: List[str] = []
         self.tracks: List[ReleaseTrack] = []
         self.claimed: set[str] = set()
 
@@ -590,7 +592,13 @@ class MusicBrainzClient:
         if not release_id:
             raise ValueError("release payload missing id")
         data = ReleaseData(release_id, release.get("title"), self._first_artist(release), release.get("date"))
-        for medium in release.get("medium-list", []):
+        media = release.get("medium-list", [])
+        data.disc_count = len(media)
+        for medium in media:
+            formats = medium.get("format-list") or ([medium.get("format")] if medium.get("format") else [])
+            for fmt in formats:
+                if fmt and fmt not in data.formats:
+                    data.formats.append(fmt)
             for track in medium.get("track-list", []):
                 recording = track.get("recording", {})
                 number = self._parse_track_number(track.get("number"))

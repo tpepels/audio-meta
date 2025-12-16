@@ -6,6 +6,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Optional, Set
 import unicodedata
+import errno
+import shutil
 
 from .config import LibrarySettings, OrganizerSettings
 from .heuristics import guess_metadata_from_path
@@ -45,7 +47,13 @@ class Organizer:
             logger.info("Dry-run would move %s -> %s", meta.path, target)
             return
         try:
-            meta.path.rename(target)
+            try:
+                meta.path.rename(target)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                # Cross-device rename failed; fall back to shutil.move which copies+removes.
+                shutil.move(str(meta.path), str(target))
             logger.info("Moved %s -> %s", meta.path, target)
             meta.path = target
         except OSError as exc:

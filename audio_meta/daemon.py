@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -59,6 +60,16 @@ class PlannedUpdate:
     score: Optional[float]
     tag_changes: dict
     target_path: Optional[Path]
+
+
+@dataclass
+class ReleaseExample:
+    title: str
+    artist: str
+    date: Optional[str]
+    track_total: Optional[int]
+    disc_count: Optional[int]
+    formats: list[str]
 
 
 class _WatchHandler(FileSystemEventHandler):
@@ -165,7 +176,8 @@ class AudioMetaDaemon:
         logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
         pending_results: list[tuple[TrackMetadata, Optional[LookupResult], bool]] = []
         release_scores: dict[str, float] = {}
-        release_examples: dict[str, tuple[str, str]] = {}
+        release_examples: dict[str, ReleaseExample] = {}
+        dir_track_count, dir_year = self._directory_context(batch.directory, batch.files)
 
         for file_path in batch.files:
             meta = TrackMetadata(path=file_path)
@@ -208,11 +220,15 @@ class AudioMetaDaemon:
                 release_id = meta.musicbrainz_release_id
                 release_scores[release_id] = max(release_scores.get(release_id, 0.0), result.score)
                 release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-                release_examples[release_id] = (
-                    release_data.album_title if release_data and release_data.album_title else meta.album or "",
-                    release_data.album_artist if release_data and release_data.album_artist else meta.album_artist or meta.artist or "",
-                    release_data.release_date if release_data else None,
+                release_examples[release_id] = ReleaseExample(
+                    title=release_data.album_title if release_data and release_data.album_title else meta.album or "",
+                    artist=release_data.album_artist if release_data and release_data.album_artist else meta.album_artist or meta.artist or "",
+                    date=release_data.release_date if release_data else None,
+                    track_total=len(release_data.tracks) if release_data and release_data.tracks else None,
+                    disc_count=release_data.disc_count if release_data and release_data.disc_count else None,
+                    formats=list(release_data.formats) if release_data else [],
                 )
+        release_scores = self._adjust_release_scores(release_scores, release_examples, dir_track_count, dir_year)
         best_release_id = None
         best_score = 0.0
         for rid, score in release_scores.items():
@@ -232,6 +248,8 @@ class AudioMetaDaemon:
                     ambiguous_candidates,
                     release_examples,
                     sample_meta,
+                    dir_track_count,
+                    dir_year,
                 )
                 if selection is None:
                     logger.warning("Skipping %s per user choice", batch.directory)
@@ -256,15 +274,18 @@ class AudioMetaDaemon:
                         (
                             rid,
                             score,
-                            release_examples.get(rid, ("", "", None))[0],
+                            release_examples.get(rid),
                         )
                         for rid, score in ambiguous_candidates
                     ],
+                    dir_track_count,
+                    dir_year,
                 )
                 return
         if best_release_id:
-            example = release_examples.get(best_release_id, ("", "", None))
-            album_name, album_artist = example[0], example[1]
+            example = release_examples.get(best_release_id)
+            album_name = example.title if example else ""
+            album_artist = example.artist if example else ""
         else:
             album_name = album_artist = ""
 
@@ -343,6 +364,38 @@ class AudioMetaDaemon:
     def _needs_supplement(self, meta: TrackMetadata) -> bool:
         return not meta.album or not meta.artist or not meta.album_artist
 
+    def _adjust_release_scores(
+        self,
+        scores: dict[str, float],
+        release_examples: dict[str, ReleaseExample],
+        dir_track_count: int,
+        dir_year: Optional[int],
+    ) -> dict[str, float]:
+        adjusted: dict[str, float] = {}
+        for release_id, base_score in scores.items():
+            example = release_examples.get(release_id)
+            bonus = 0.0
+            release_track_total = example.track_total if example else None
+            if dir_track_count and release_track_total:
+                ratio = min(dir_track_count, release_track_total) / max(dir_track_count, release_track_total)
+                if ratio >= 0.9:
+                    bonus += 0.04
+                elif ratio >= 0.75:
+                    bonus += 0.02
+                elif ratio <= 0.5:
+                    bonus -= 0.03
+            release_year = self._parse_year(example.date if example else None)
+            if dir_year and release_year:
+                diff = abs(release_year - dir_year)
+                if diff == 0:
+                    bonus += 0.035
+                elif diff == 1:
+                    bonus += 0.015
+                elif diff >= 3:
+                    bonus -= 0.03
+            adjusted[release_id] = base_score + bonus
+        return adjusted
+
     @staticmethod
     def _safe_stat(path: Path):
         try:
@@ -351,14 +404,26 @@ class AudioMetaDaemon:
             return None
 
     @staticmethod
-    def _warn_ambiguous_release(directory: Path, releases: list[tuple[str, float, str]]) -> None:
+    def _warn_ambiguous_release(
+        directory: Path,
+        releases: list[tuple[str, float, Optional[ReleaseExample]]],
+        dir_track_count: int,
+        dir_year: Optional[int],
+    ) -> None:
+        hint = f"{dir_track_count} audio files" if dir_track_count else "unknown track count"
+        if dir_year:
+            hint = f"{hint}; year hint {dir_year}"
         entries = ", ".join(
-            f"{title or release_id} ({release_id}, score={score:.2f})" for release_id, score, title in releases
+            f"{(example.title if example else '') or release_id} "
+            f"({release_id}, score={score:.2f}, year={AudioMetaDaemon._parse_year(example.date if example else None) or '?'}, "
+            f"tracks={example.track_total if example and example.track_total else '?'})"
+            for release_id, score, example in releases
         )
         logger.warning(
-            "Ambiguous release detection for %s – multiple albums scored similarly: %s. "
+            "Ambiguous release detection for %s (%s) – multiple albums scored similarly: %s. "
             "Skipping this directory; adjust tags or split folders, then rerun.",
             directory,
+            hint,
             entries,
         )
 
@@ -366,26 +431,46 @@ class AudioMetaDaemon:
         self,
         directory: Path,
         mb_candidates: list[tuple[str, float]],
-        release_examples: dict[str, tuple[str, str, Optional[str]]],
+        release_examples: dict[str, ReleaseExample],
         sample_meta: Optional[TrackMetadata],
+        dir_track_count: int,
+        dir_year: Optional[int],
     ) -> Optional[tuple[str, str]]:
         options: list[dict] = []
         idx = 1
         for release_id, score in sorted(mb_candidates, key=lambda x: x[1], reverse=True):
-            title, artist, date = release_examples.get(release_id, ("", "", None))
-            year = date.split("-")[0] if date else "?"
-            label = f"[MusicBrainz] {title or 'Unknown Title'} ({year}) – {artist or 'Unknown Artist'} [score {score:.2f}] ({release_id})"
+            example = release_examples.get(release_id)
+            title = example.title if example else ""
+            artist = example.artist if example else ""
+            year = self._parse_year(example.date if example else None) or "?"
+            release = self.musicbrainz.release_tracker.releases.get(release_id)
+            track_count = len(release.tracks) if release else example.track_total if example else None
+            disc_count = release.disc_count if release and release.disc_count else example.disc_count if example else None
+            formats = release.formats if release else example.formats if example else []
+            disc_label = self._disc_label(disc_count) or "disc count unknown"
+            format_label = ", ".join(formats) if formats else "format unknown"
+            label = (
+                f"[MusicBrainz] {title or 'Unknown Title'} ({year}) – {artist or 'Unknown Artist'} "
+                f"[tracks: {track_count or '?'}; {disc_label}; {format_label}] score {score:.2f} ({release_id})"
+            )
             options.append({"idx": idx, "provider": "musicbrainz", "id": release_id, "label": label})
             idx += 1
         if sample_meta and self.discogs:
             for cand in self._discogs_candidates(sample_meta):
-                label = f"[Discogs] {cand['title']} ({cand.get('year') or '?'}) – {cand.get('artist') or 'Unknown'} (release {cand['id']})"
+                label = (
+                    f"[Discogs] {cand.get('title') or 'Unknown Title'} ({cand.get('year') or '?'}) – {cand.get('artist') or 'Unknown'} "
+                    f"[tracks: {cand.get('track_count') or '?'}; "
+                    f"{cand.get('disc_label') or 'disc count unknown'}; "
+                    f"{cand.get('format_label') or 'format unknown'}] "
+                    f"(release {cand['id']})"
+                )
                 options.append({"idx": idx, "provider": "discogs", "id": cand["id"], "label": label})
                 idx += 1
         if not options:
             logger.warning("No interactive options available for %s", directory)
             return None
-        print(f"\nAmbiguous release for {directory}:")
+        year_hint = f"{dir_year}" if dir_year else "unknown"
+        print(f"\nAmbiguous release for {directory} – {dir_track_count} tracks detected, year hint {year_hint}:")
         for option in options:
             print(f"  {option['idx']}. {option['label']}")
         print("  0. Skip this directory")
@@ -416,12 +501,101 @@ class AudioMetaDaemon:
             release_id = item.get("id")
             if release_id is None:
                 continue
+            details = self.discogs.get_release(int(release_id))
+            track_count = item.get("trackcount")
+            if track_count is None and details:
+                tracklist = details.get("tracklist") or []
+                track_count = len([t for t in tracklist if t.get("type_", "track") == "track"])
+            formats, disc_count = self._discogs_format_details(item, details)
+            artist_name = self._discogs_release_artist(details) or item.get("artist") or item.get("label")
             candidates.append(
                 {
                     "id": release_id,
-                    "title": item.get("title"),
-                    "artist": item.get("artist") or item.get("label"),
-                    "year": item.get("year"),
+                    "title": (details or {}).get("title") or item.get("title"),
+                    "artist": artist_name,
+                    "year": (details or {}).get("year") or item.get("year"),
+                    "track_count": track_count,
+                    "disc_count": disc_count,
+                    "disc_label": self._disc_label(disc_count),
+                    "format_label": ", ".join(formats) if formats else None,
+                    "formats": formats,
+                    "country": (details or {}).get("country") or item.get("country"),
                 }
             )
         return candidates
+
+    def _discogs_format_details(self, search_item: dict, release: Optional[dict]) -> tuple[list[str], Optional[int]]:
+        entries: list[str] = []
+        disc_total = 0
+        source_formats = (release or {}).get("formats") or []
+        for fmt in source_formats:
+            name = fmt.get("name")
+            if not name:
+                continue
+            qty_raw = fmt.get("qty")
+            try:
+                qty_val = int(qty_raw)
+            except (TypeError, ValueError):
+                qty_val = 1
+            if qty_val <= 0:
+                qty_val = 1
+            desc = ", ".join(fmt.get("descriptions", []) or [])
+            label = f"{qty_val}×{name}" if qty_val > 1 else name
+            if desc:
+                label = f"{label} ({desc})"
+            entries.append(label)
+            disc_total += qty_val
+        if not entries:
+            fmt_field = search_item.get("format")
+            if isinstance(fmt_field, list):
+                entries.extend([f for f in fmt_field if isinstance(f, str) and f])
+            elif isinstance(fmt_field, str) and fmt_field:
+                entries.append(fmt_field)
+        return entries, (disc_total or None)
+
+    @staticmethod
+    def _discogs_release_artist(release: Optional[dict]) -> Optional[str]:
+        if not release:
+            return None
+        artists = release.get("artists") or []
+        names: list[str] = []
+        for artist in artists:
+            name = artist.get("name")
+            if not name:
+                continue
+            base = name.split(" (")[0].strip()
+            if base and base not in names:
+                names.append(base)
+        return ", ".join(names) if names else None
+
+    @staticmethod
+    def _disc_label(disc_count: Optional[int]) -> Optional[str]:
+        if not disc_count:
+            return None
+        return f"{disc_count} disc{'s' if disc_count > 1 else ''}"
+
+    def _directory_context(self, directory: Path, files: list[Path]) -> tuple[int, Optional[int]]:
+        return len(files), self._infer_year_from_directory(directory)
+
+    def _infer_year_from_directory(self, directory: Path) -> Optional[int]:
+        segments = [directory.name]
+        parent_name = directory.parent.name if directory.parent else ""
+        if parent_name:
+            segments.append(parent_name)
+        for segment in segments:
+            year = self._parse_year(segment)
+            if year:
+                return year
+        return None
+
+    @staticmethod
+    def _parse_year(value: Optional[str]) -> Optional[int]:
+        if not value:
+            return None
+        match = re.search(r"(19|20)\d{2}", value)
+        if not match:
+            return None
+        try:
+            return int(match.group(0))
+        except ValueError:
+            return None
