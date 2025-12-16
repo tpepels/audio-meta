@@ -16,6 +16,9 @@ class ClassicalDecision:
     score: float
 
 
+CONNECTOR_TOKENS = {"&", "and", "with", "feat", "featuring", "+", "·", "•"}
+
+
 class ClassicalHeuristics:
     def __init__(self, settings: ClassicalSettings) -> None:
         self.settings = settings
@@ -36,10 +39,13 @@ class ClassicalHeuristics:
         decision = self.evaluate(meta)
         if not decision.is_classical:
             return False
+        fallback_performers: list[str] = []
         if not meta.composer:
-            fallback = meta.album_artist or meta.artist
-            if fallback:
-                meta.composer = fallback
+            fallback_source = meta.album_artist or meta.artist
+            tokens = self._split_artist_tokens(fallback_source)
+            if tokens:
+                meta.composer = tokens[0]
+                fallback_performers = tokens[1:]
         if meta.composer:
             original_artist = meta.artist
             meta.album_artist = meta.composer
@@ -48,6 +54,8 @@ class ClassicalHeuristics:
                 performer_names.append(meta.conductor)
             if meta.performers:
                 performer_names.extend(meta.performers)
+            if fallback_performers:
+                performer_names.extend(fallback_performers)
             if not performer_names:
                 performer_names.append(original_artist or meta.composer)
             meta.artist = "; ".join(performer_names)
@@ -70,6 +78,23 @@ class ClassicalHeuristics:
         if not work_norm or not title_norm:
             return False
         return work_norm in title_norm
+
+    def _split_artist_tokens(self, value: Optional[str]) -> list[str]:
+        if not value:
+            return []
+        raw_tokens = [chunk.strip() for chunk in re.split(r"[;,]+", value) if chunk.strip()]
+        cleaned: list[str] = []
+        for token in raw_tokens:
+            simplified = token.strip()
+            if not simplified:
+                continue
+            lower = re.sub(r"[^\w]+", " ", simplified.lower()).strip()
+            if not lower:
+                continue
+            if lower in CONNECTOR_TOKENS:
+                continue
+            cleaned.append(simplified)
+        return cleaned
 
     @staticmethod
     def _match_keyword(value: str, keywords: Iterable[str]) -> bool:
