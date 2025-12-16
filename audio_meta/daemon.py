@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -287,7 +288,15 @@ class AudioMetaDaemon:
                     logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                     return
                 self._apply_discogs_release_details(pending_results, discogs_release_details)
-                self._persist_directory_release(batch.directory, "discogs", selection_id, 1.0)
+                discogs_artist = self._discogs_release_artist(discogs_release_details)
+                self._persist_directory_release(
+                    batch.directory,
+                    "discogs",
+                    selection_id,
+                    1.0,
+                    artist_hint=discogs_artist,
+                    album_hint=discogs_release_details.get("title"),
+                )
             else:
                 applied = self._apply_musicbrainz_release_selection(batch.directory, selection_id, pending_results)
                 if not applied:
@@ -343,7 +352,15 @@ class AudioMetaDaemon:
                         self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
                         logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                         return
-                    self._persist_directory_release(batch.directory, "discogs", selection_id, 1.0)
+                    discogs_artist = self._discogs_release_artist(discogs_release_details)
+                    self._persist_directory_release(
+                        batch.directory,
+                        "discogs",
+                        selection_id,
+                        1.0,
+                        artist_hint=discogs_artist,
+                        album_hint=discogs_release_details.get("title"),
+                    )
                     best_release_id = None
                 else:
                     best_release_id = selection_id
@@ -368,7 +385,14 @@ class AudioMetaDaemon:
             example = release_examples.get(best_release_id)
             album_name = example.title if example else ""
             album_artist = example.artist if example else ""
-            self._persist_directory_release(batch.directory, "musicbrainz", best_release_id, best_score)
+            self._persist_directory_release(
+                batch.directory,
+                "musicbrainz",
+                best_release_id,
+                best_score,
+                artist_hint=album_artist,
+                album_hint=album_name,
+            )
         else:
             album_name = album_artist = ""
 
@@ -690,6 +714,7 @@ class AudioMetaDaemon:
             self.musicbrainz._fetch_release_tracks,
         )
         self.musicbrainz.release_tracker.remember_release(directory, release_id, 1.0)
+        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
         applied = False
         for pending in pending_results:
             if pending.matched:
@@ -709,7 +734,16 @@ class AudioMetaDaemon:
                 pending.matched = True
                 applied = True
         if applied:
-            self._persist_directory_release(directory, "musicbrainz", release_id, 1.0)
+            artist = release_data.album_artist if release_data else None
+            album = release_data.album_title if release_data else None
+            self._persist_directory_release(
+                directory,
+                "musicbrainz",
+                release_id,
+                1.0,
+                artist_hint=artist,
+                album_hint=album,
+            )
         return applied
 
     def _discogs_candidates(self, meta: TrackMetadata) -> list[dict]:
@@ -835,18 +869,13 @@ class AudioMetaDaemon:
             print(f" - {directory}: {reason}")
 
     def _cached_release_for_directory(self, directory: Path) -> Optional[tuple[str, str, float]]:
-        try:
-            current = directory.resolve()
-        except FileNotFoundError:
-            current = directory
-        while True:
-            entry = self.cache.get_directory_release(current)
+        for key in self._directory_release_keys(directory):
+            entry = self.cache.get_directory_release(key)
             if entry:
+                provider, release_id, score = entry
+                if not str(key).startswith("hint://"):
+                    self._persist_directory_release(directory, provider, release_id, score)
                 return entry
-            parent = current.parent
-            if parent == current or not self._path_within_library(parent):
-                break
-            current = parent
         return None
 
     def _path_within_library(self, path: Path) -> bool:
@@ -859,15 +888,85 @@ class AudioMetaDaemon:
                 return True
         return False
 
-    def _persist_directory_release(self, directory: Path, provider: str, release_id: str, score: float) -> None:
-        self.cache.set_directory_release(directory, provider, release_id, score)
-        parent = directory.parent
-        if (
-            parent != directory
-            and self._looks_like_disc_folder(directory.name)
-            and self._path_within_library(parent)
-        ):
-            self.cache.set_directory_release(parent, provider, release_id, score)
+    def _directory_release_keys(
+        self,
+        directory: Path,
+        artist_hint: Optional[str] = None,
+        album_hint: Optional[str] = None,
+    ) -> list[str]:
+        keys: list[str] = []
+        for key in self._path_chain_keys(directory):
+            if key not in keys:
+                keys.append(key)
+        path_artist, path_album = self._path_based_hints(directory)
+        final_artist = artist_hint or path_artist
+        final_album = album_hint or path_album
+        canonical = self._hint_cache_key(final_artist, final_album)
+        if canonical and canonical not in keys:
+            keys.append(canonical)
+        return keys
+
+    def _path_chain_keys(self, directory: Path) -> list[str]:
+        keys: list[str] = []
+        try:
+            current = directory.resolve()
+        except FileNotFoundError:
+            current = directory
+        while True:
+            keys.append(str(current))
+            parent = current.parent
+            if parent == current or not self._path_within_library(parent):
+                break
+            current = parent
+        return keys
+
+    def _path_based_hints(self, directory: Path) -> tuple[Optional[str], Optional[str]]:
+        names: list[str] = []
+        current = directory
+        for _ in range(3):
+            if not current or not current.name:
+                break
+            names.append(current.name)
+            if current.parent == current:
+                break
+            current = current.parent
+        album = next((name for name in names if name and not self._looks_like_disc_folder(name)), names[0] if names else None)
+        artist = None
+        if len(names) > 1:
+            for name in names[1:]:
+                if name and not self._looks_like_disc_folder(name):
+                    artist = name
+                    break
+        return artist, album
+
+    def _hint_cache_key(self, artist: Optional[str], album: Optional[str]) -> Optional[str]:
+        normalized_album = self._normalize_hint_value(album)
+        if not normalized_album:
+            return None
+        normalized_artist = self._normalize_hint_value(artist) or "unknown"
+        return f"hint://{normalized_artist}|{normalized_album}"
+
+    @staticmethod
+    def _normalize_hint_value(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        cleaned = unicodedata.normalize("NFKD", value)
+        cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
+        cleaned = cleaned.lower()
+        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+        return cleaned.strip()
+
+    def _persist_directory_release(
+        self,
+        directory: Path,
+        provider: str,
+        release_id: str,
+        score: float,
+        artist_hint: Optional[str] = None,
+        album_hint: Optional[str] = None,
+    ) -> None:
+        for key in self._directory_release_keys(directory, artist_hint, album_hint):
+            self.cache.set_directory_release(key, provider, release_id, score)
 
     @staticmethod
     def _looks_like_disc_folder(name: str) -> bool:

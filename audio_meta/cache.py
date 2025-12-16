@@ -143,7 +143,7 @@ class MetadataCache:
             self._conn.execute("UPDATE processed_files SET organized = 0")
             self._conn.commit()
 
-    def get_directory_release(self, directory: Path) -> Optional[tuple[str, str, float]]:
+    def get_directory_release(self, directory: Path | str) -> Optional[tuple[str, str, float]]:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT provider, release_id, score FROM directory_releases WHERE directory_path = ?",
@@ -155,7 +155,7 @@ class MetadataCache:
         provider, release_id, score = row
         return provider, release_id, float(score)
 
-    def set_directory_release(self, directory: Path, provider: str, release_id: str, score: float) -> None:
+    def set_directory_release(self, directory: Path | str, provider: str, release_id: str, score: float) -> None:
         with self._lock:
             self._conn.execute(
                 """
@@ -168,7 +168,7 @@ class MetadataCache:
             )
             self._conn.commit()
 
-    def delete_directory_release(self, directory: Path) -> None:
+    def delete_directory_release(self, directory: Path | str) -> None:
         with self._lock:
             self._conn.execute(
                 "DELETE FROM directory_releases WHERE directory_path = ?",
