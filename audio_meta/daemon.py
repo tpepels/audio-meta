@@ -1237,7 +1237,7 @@ class AudioMetaDaemon:
         if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value.lower()):
             return "musicbrainz", value
         if value.isdigit():
-            return "discogs", value
+            print("Use dg:<id> to select a Discogs release by numeric ID.")
         return None
 
     def _directory_already_processed(self, batch: DirectoryBatch) -> bool:
