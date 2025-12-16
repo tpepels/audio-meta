@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -17,6 +18,15 @@ from .tagging import TagWriter
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class SingletonEntry:
+    directory: Path
+    file_path: Path
+    meta: TrackMetadata
+    is_classical: bool
+    target: Optional[Path]
+
+
 class LibraryAuditor:
     """Detects and optionally fixes files that are stored under the wrong artist/album."""
 
@@ -27,7 +37,8 @@ class LibraryAuditor:
         if self._cache is None:
             self._cache = MetadataCache(settings.daemon.cache_path)
             self._owns_cache = True
-        self.organizer = Organizer(settings.organizer, settings.library, cache=self._cache)
+        self.cache = self._cache
+        self.organizer = Organizer(settings.organizer, settings.library, cache=self.cache)
         # We always want to be able to compute destinations even if organizer is disabled globally.
         self.organizer.enabled = True
         self.heuristics = ClassicalHeuristics(settings.classical)
@@ -161,3 +172,41 @@ class LibraryAuditor:
             except ValueError:
                 continue
         return str(path)
+
+    def display_path(self, path: Path) -> str:
+        return self._display(path)
+
+    def collect_singletons(self) -> List[SingletonEntry]:
+        entries: List[SingletonEntry] = []
+        for root in self.library_roots:
+            if not root.exists():
+                continue
+            for dirpath, _, filenames in os.walk(root):
+                directory = Path(dirpath)
+                audio_files = [
+                    directory / name
+                    for name in filenames
+                    if Path(name).suffix.lower() in self.extensions
+                ]
+                if len(audio_files) != 1:
+                    continue
+                if self.cache and self.cache.is_directory_ignored(directory):
+                    continue
+                file_path = audio_files[0]
+                if not file_path.exists():
+                    continue
+                meta = TrackMetadata(path=file_path)
+                tags = self.tag_writer.read_existing_tags(meta) or {}
+                self._apply_tag_values(meta, tags)
+                classical = self.heuristics.evaluate(meta).is_classical
+                target = self.organizer.plan_target(meta, classical)
+                entries.append(
+                    SingletonEntry(
+                        directory=directory,
+                        file_path=file_path,
+                        meta=meta,
+                        is_classical=classical,
+                        target=target,
+                    )
+                )
+        return entries

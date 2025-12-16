@@ -68,6 +68,7 @@ organizer:
 | `audio-meta --config config.yaml scan` | Run only the scanner (no audit). Use when you want to inspect before fixing. |
 | `audio-meta --config config.yaml audit` | Report misplaced files based on tags; add `--fix` to auto-move them. |
 | `audio-meta --config config.yaml cleanup [--dry-run]` | Remove directories that contain no audio files (e.g., leftover artwork). |
+| `audio-meta --config config.yaml singletons` | Interactively review directories that currently contain a single audio file (keep/move/delete/ignore). |
 | `audio-meta --config config.yaml rollback-moves` | Undo the most recent organizer moves using the move history stored in the cache. |
 | `audio-meta --config config.yaml daemon` | Start the filesystem watcher to process new files continuously. |
 
@@ -92,6 +93,16 @@ Advanced / troubleshooting flags:
   - `d` – delete the directory.
   - `a` – archive the directory (requires `organizer.archive_root`).
   - `i` – ignore the directory in future scans.
+
+## Reviewing single-file directories
+
+The audit stage highlights directories that contain only one audio file (often artwork folders or stray tracks). You can process them interactively at any time:
+
+```
+audio-meta --config config.yaml singletons
+```
+
+For each entry you can press **Enter** to keep it, choose **m** to move it under the suggested artist/album, choose **d** to delete it, or choose **i** to ignore it permanently (the ignore flag is stored in the metadata cache so future runs skip it). This review uses the same cache as the scanner, so previous decisions are remembered.
 
 ## Running as a daemon
 
