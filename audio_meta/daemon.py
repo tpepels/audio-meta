@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -8,7 +9,8 @@ import shutil
 import sys
 import unicodedata
 from difflib import SequenceMatcher
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Optional
@@ -90,6 +92,7 @@ class PendingResult:
     meta: TrackMetadata
     result: Optional[LookupResult]
     matched: bool
+    existing_tags: dict[str, Optional[str]] = field(default_factory=dict)
 
 
 class _WatchHandler(FileSystemEventHandler):
@@ -123,7 +126,6 @@ class AudioMetaDaemon:
         dry_run_output: Optional[Path] = None,
         interactive: bool = False,
         release_cache_enabled: bool = True,
-        defer_prompts: bool = False,
     ) -> None:
         self.settings = settings
         self.cache = MetadataCache(settings.daemon.cache_path)
@@ -143,7 +145,7 @@ class AudioMetaDaemon:
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
         self.interactive = interactive
         self.release_cache_enabled = release_cache_enabled
-        self.defer_prompts = bool(defer_prompts and interactive)
+        self.defer_prompts = bool(interactive)
         self._use_color = sys.stdout.isatty()
         self.skip_reasons: dict[Path, str] = {}
         self._skip_lock = Lock()
@@ -157,6 +159,8 @@ class AudioMetaDaemon:
         self._deferred_set: set[Path] = set()
         self._processing_deferred = False
         self.archive_root = settings.organizer.archive_root
+        if self.defer_prompts:
+            self._sync_deferred_prompts()
 
     async def run_scan(self) -> None:
         logger.debug("Starting one-off scan")
@@ -224,9 +228,28 @@ class AudioMetaDaemon:
         if self._directory_already_processed(batch):
             logger.debug("Skipping %s; already processed and organized", batch.directory)
             return
+        display_path = self._display_path(batch.directory)
         planned: list[PlannedUpdate] = []
         release_summary_printed = False
         logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
+        directory_hash = self._calculate_directory_hash(batch.directory, batch.files)
+        hash_release_entry: Optional[tuple[str, str, float]] = None
+        cached_directory_hash = None
+        if directory_hash and self.release_cache_enabled:
+            hash_release_entry = self.cache.get_release_by_hash(directory_hash)
+            cached_directory_hash = self.cache.get_directory_hash(batch.directory)
+            if (
+                cached_directory_hash
+                and cached_directory_hash == directory_hash
+                and hash_release_entry
+                and not force_prompt
+            ):
+                logger.debug(
+                    "Skipping %s; directory unchanged (hash=%s)",
+                    display_path,
+                    directory_hash[:8],
+                )
+                return
         pending_results: list[PendingResult] = []
         release_scores: dict[str, float] = {}
         release_examples: dict[str, ReleaseExample] = {}
@@ -237,6 +260,8 @@ class AudioMetaDaemon:
         forced_release_id: Optional[str] = None
         forced_release_score: float = 0.0
         cached_release_entry = self._cached_release_for_directory(batch.directory)
+        if not cached_release_entry and hash_release_entry:
+            cached_release_entry = hash_release_entry
         if cached_release_entry:
             provider, cached_release_id, cached_score = cached_release_entry
             forced_provider = provider
@@ -283,6 +308,9 @@ class AudioMetaDaemon:
             meta = TrackMetadata(path=file_path)
             if dir_track_count:
                 meta.extra["TRACK_TOTAL"] = str(dir_track_count)
+            existing_tags = self._read_existing_tags(meta)
+            if existing_tags:
+                self._apply_tag_hints(meta, existing_tags)
             stat_before = None
             if not self.dry_run_recorder:
                 stat_before = self._safe_stat(file_path)
@@ -317,7 +345,14 @@ class AudioMetaDaemon:
                     result = self.discogs.enrich(meta)
                 except Exception:
                     logger.exception("Discogs lookup failed for %s", file_path)
-            pending_results.append(PendingResult(meta=meta, result=result, matched=bool(result)))
+            pending_results.append(
+                PendingResult(
+                    meta=meta,
+                    result=result,
+                    matched=bool(result),
+                    existing_tags=dict(existing_tags),
+                )
+            )
             if result and meta.musicbrainz_release_id:
                 release_id = meta.musicbrainz_release_id
                 key = self._release_key("musicbrainz", release_id)
@@ -336,6 +371,9 @@ class AudioMetaDaemon:
         if not release_scores and cached_discogs_release_details:
             self._apply_discogs_release_details(pending_results, cached_discogs_release_details)
         if not release_scores and self.interactive and pending_results:
+            if self.defer_prompts and not force_prompt:
+                self._schedule_deferred_directory(batch.directory, "no_release_candidates")
+                return
             sample_meta = pending_results[0].meta if pending_results else None
             if sample_meta and dir_track_count:
                 sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
@@ -780,13 +818,31 @@ class AudioMetaDaemon:
                     self._display_path(batch.directory),
                 )
 
+        should_cache_release = (
+            self.release_cache_enabled
+            and directory_hash
+            and best_release_id
+        )
+
+        def _cache_release_state() -> None:
+            if not should_cache_release or not directory_hash or not best_release_id:
+                return
+            provider, release_plain_id = self._split_release_key(best_release_id)
+            effective_score = release_scores.get(best_release_id, best_score)
+            if effective_score is None:
+                effective_score = 1.0
+            self.cache.set_release_by_hash(directory_hash, provider, release_plain_id, effective_score)
+            self.cache.set_directory_hash(batch.directory, directory_hash)
+
         if not planned:
             if not any(p.matched for p in pending_results):
                 self._record_skip(batch.directory, "No metadata match found for directory")
             logger.debug("No actionable files in %s", batch.directory)
+            _cache_release_state()
             return
         for plan in planned:
             self._apply_plan(plan)
+        _cache_release_state()
 
     def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
         if not self.defer_prompts:
@@ -796,9 +852,24 @@ class AudioMetaDaemon:
                 return
             self._deferred_set.add(directory)
             self._deferred_directories.append(directory)
+        self.cache.add_deferred_prompt(directory, reason)
         logger.info("Deferring %s (%s); will request input later", self._display_path(directory), reason)
 
+    def _sync_deferred_prompts(self) -> None:
+        if not self.defer_prompts:
+            return
+        for directory_str, reason in self.cache.list_deferred_prompts():
+            path = Path(directory_str)
+            with self._defer_lock:
+                if path in self._deferred_set:
+                    continue
+                self._deferred_set.add(path)
+                self._deferred_directories.append(path)
+
     def _process_deferred_directories(self) -> None:
+        if not self.defer_prompts:
+            return
+        self._sync_deferred_prompts()
         with self._defer_lock:
             pending = list(self._deferred_directories)
             self._deferred_directories.clear()
@@ -813,8 +884,10 @@ class AudioMetaDaemon:
                 batch = self.scanner.collect_directory(directory)
                 if not batch:
                     logger.warning("Deferred directory %s no longer exists; skipping", self._display_path(directory))
+                    self.cache.remove_deferred_prompt(directory)
                     continue
                 self._process_directory(batch, force_prompt=True)
+                self.cache.remove_deferred_prompt(directory)
         finally:
             self._processing_deferred = False
 
@@ -838,15 +911,15 @@ class AudioMetaDaemon:
         original_path = meta.path
         organized_flag = self.organizer.enabled
         try:
+            if target_path:
+                self.organizer.move(meta, target_path, dry_run=False)
+                self.cache.record_move(original_path, target_path)
+                self.organizer.cleanup_source_directory(original_path.parent)
             if tag_changes:
                 self.tag_writer.apply(meta)
                 logger.debug("Updated tags for %s", meta.path)
             else:
                 logger.debug("Tags already up to date for %s", meta.path)
-            if target_path:
-                self.organizer.move(meta, target_path, dry_run=False)
-                self.cache.record_move(original_path, target_path)
-                self.organizer.cleanup_source_directory(original_path.parent)
         except ProcessingError as exc:
             logger.warning("Failed to update tags for %s: %s", meta.path, exc)
             return
@@ -861,6 +934,44 @@ class AudioMetaDaemon:
 
     def _needs_supplement(self, meta: TrackMetadata) -> bool:
         return not meta.album or not meta.artist or not meta.album_artist
+
+    def _read_existing_tags(self, meta: TrackMetadata) -> dict[str, Optional[str]]:
+        tags = self.tag_writer.read_existing_tags(meta)
+        if not tags:
+            return {}
+        cleaned: dict[str, Optional[str]] = {}
+        for key, value in tags.items():
+            if isinstance(value, str):
+                stripped = value.strip()
+                cleaned[key] = stripped or None
+            else:
+                cleaned[key] = value
+        return cleaned
+
+    def _apply_tag_hints(self, meta: TrackMetadata, tags: dict[str, Optional[str]]) -> None:
+        if not tags:
+            return
+        def assign(attr: str, key: str) -> None:
+            if getattr(meta, attr, None):
+                return
+            value = self._prepare_tag_value(tags.get(key))
+            if value:
+                setattr(meta, attr, value)
+        assign("title", "title")
+        assign("album", "album")
+        assign("artist", "artist")
+        assign("album_artist", "album_artist")
+        assign("composer", "composer")
+        assign("genre", "genre")
+        assign("work", "work")
+        assign("movement", "movement")
+
+    @staticmethod
+    def _prepare_tag_value(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
     def _record_skip(self, directory: Path, reason: str) -> None:
         with self._skip_lock:
@@ -925,18 +1036,20 @@ class AudioMetaDaemon:
             return 0.0
         bonus = 0.0
         first_meta = pending_results[0].meta if pending_results else None
-        meta_artist = None
-        meta_album = None
-        if first_meta:
-            meta_artist = first_meta.album_artist or first_meta.artist
-            meta_album = first_meta.album
+        tag_artist, tag_album = self._aggregated_tag_hints(pending_results)
         release_artist = example.artist or None
         release_album = example.title or None
-        bonus += self._overlap_delta(self._token_overlap_ratio(meta_artist, release_artist))
-        bonus += self._overlap_delta(self._token_overlap_ratio(meta_album, release_album))
+        primary_artist = tag_artist or (first_meta.album_artist or first_meta.artist if first_meta else None)
+        primary_album = tag_album or (first_meta.album if first_meta else None)
+        if primary_artist:
+            weight = 1.2 if tag_artist else 0.8
+            bonus += self._weighted_overlap(self._token_overlap_ratio(primary_artist, release_artist), weight)
+        if primary_album:
+            weight = 1.2 if tag_album else 0.8
+            bonus += self._weighted_overlap(self._token_overlap_ratio(primary_album, release_album), weight)
         hint_artist, hint_album = self._path_based_hints(directory)
-        bonus += 0.5 * self._overlap_delta(self._token_overlap_ratio(hint_artist, release_artist))
-        bonus += 0.5 * self._overlap_delta(self._token_overlap_ratio(hint_album, release_album))
+        bonus += self._weighted_overlap(self._token_overlap_ratio(hint_artist, release_artist), 0.5)
+        bonus += self._weighted_overlap(self._token_overlap_ratio(hint_album, release_album), 0.5)
         return max(-0.05, min(0.05, bonus))
 
     @staticmethod
@@ -950,6 +1063,54 @@ class AudioMetaDaemon:
         if ratio <= 0.2:
             return -0.02
         return 0.0
+
+    def _weighted_overlap(self, ratio: Optional[float], weight: float) -> float:
+        if weight <= 0:
+            return 0.0
+        return self._overlap_delta(ratio) * weight
+
+    def _aggregated_tag_hints(self, pending_results: list[PendingResult]) -> tuple[Optional[str], Optional[str]]:
+        artist_values: list[str] = []
+        album_values: list[str] = []
+        for pending in pending_results:
+            tags = pending.existing_tags
+            if not tags:
+                continue
+            for candidate in (tags.get("album_artist"), tags.get("artist")):
+                if candidate:
+                    artist_values.append(candidate)
+                    break
+            album_candidate = tags.get("album")
+            if album_candidate:
+                album_values.append(album_candidate)
+        artist = self._dominant_value(artist_values)
+        album = self._dominant_value(album_values)
+        return artist, album
+
+    def _dominant_value(self, candidates: list[str]) -> Optional[str]:
+        counter: Counter[str] = Counter()
+        canonical_map: dict[str, str] = {}
+        for candidate in candidates:
+            cleaned = self._clean_tag_hint(candidate)
+            if not cleaned:
+                continue
+            canonical = cleaned.lower()
+            counter[canonical] += 1
+            canonical_map.setdefault(canonical, cleaned)
+        if not counter:
+            return None
+        canonical, _ = counter.most_common(1)[0]
+        return canonical_map.get(canonical)
+
+    @staticmethod
+    def _clean_tag_hint(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        normalized = unicodedata.normalize("NFKD", cleaned)
+        return normalized.strip()
 
     def _release_match_quality(
         self,
@@ -1756,6 +1917,30 @@ class AudioMetaDaemon:
             ):
                 return False
         return True
+
+    def _calculate_directory_hash(self, directory: Path, files: list[Path]) -> Optional[str]:
+        if not files:
+            return None
+        hasher = hashlib.sha1()
+        organizer_marker = (
+            f"org:{int(self.organizer.enabled)}|cls:{self.organizer.settings.classical_mixed_strategy}|"
+            f"len:{self.organizer.settings.max_filename_length}"
+        )
+        hasher.update(organizer_marker.encode("utf-8"))
+        unique_files = sorted({path.resolve() for path in files})
+        for path in unique_files:
+            stat = self._safe_stat(path)
+            if not stat:
+                continue
+            try:
+                rel = path.relative_to(directory)
+            except ValueError:
+                rel = path.name
+            hasher.update(str(rel).encode("utf-8"))
+            hasher.update(str(stat.st_size).encode("utf-8"))
+            hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
+        digest = hasher.hexdigest()
+        return digest or None
 
     def _infer_year_from_directory(self, directory: Path) -> Optional[int]:
         segments = [directory.name]

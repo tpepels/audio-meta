@@ -5,20 +5,15 @@ import asyncio
 import errno
 import logging
 import os
-import re
 import shutil
-import unicodedata
 from pathlib import Path
 from typing import Optional
 
-from mutagen import File as MutagenFile
-
+from .audit import LibraryAuditor
 from .cache import MetadataCache
 from .config import Settings, find_config
 from .daemon import AudioMetaDaemon
-from .heuristics import guess_metadata_from_path
 from .providers.validation import validate_providers
-from .scanner import LibraryScanner
 
 LOG_FORMAT = "%(levelname).1s | %(name)s | %(message)s"
 
@@ -99,11 +94,6 @@ def main() -> None:
         help="Do not reuse previously chosen releases during this run",
     )
     parser.add_argument(
-        "--defer-prompts",
-        action="store_true",
-        help="Process manual release selections after scanning completes",
-    )
-    parser.add_argument(
         "--dry-run-output",
         type=Path,
         help="Record proposed tag changes to this file (JSON Lines) without editing files",
@@ -112,7 +102,13 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("scan", help="Run a one-off scan")
     subparsers.add_parser("daemon", help="Start the watchdog daemon")
-    subparsers.add_parser("audit", help="Report directories containing mixed album/artist metadata")
+    subparsers.add_parser("run", help="Run a scan followed by an audit with automatic fixes")
+    audit_parser = subparsers.add_parser("audit", help="Report directories containing mixed album/artist metadata")
+    audit_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Automatically move files whose tags indicate a different artist/album",
+    )
     cleanup_parser = subparsers.add_parser(
         "cleanup", help="Remove directories that only contain non-audio files"
     )
@@ -159,7 +155,7 @@ def main() -> None:
     if args.rollback_moves:
         rollback_moves(settings)
         return
-    requires_providers = args.command in {"scan", "daemon"}
+    requires_providers = args.command in {"scan", "daemon", "run"}
     if requires_providers:
         validate_providers(settings.providers)
     if args.clear_move_cache:
@@ -167,13 +163,12 @@ def main() -> None:
         cache.clear_moves()
         cache.close()
     daemon: AudioMetaDaemon | None = None
-    if args.command in {"scan", "daemon"}:
+    if args.command in {"scan", "daemon", "run"}:
         daemon = AudioMetaDaemon(
             settings,
             dry_run_output=args.dry_run_output,
-            interactive=(args.command == "scan"),
+            interactive=(args.command in {"scan", "run"}),
             release_cache_enabled=not args.disable_release_cache,
-            defer_prompts=args.defer_prompts or settings.daemon.defer_prompts,
         )
 
     try:
@@ -182,8 +177,11 @@ def main() -> None:
                 asyncio.run(daemon.run_scan())
             case "daemon":
                 asyncio.run(daemon.run_daemon())
+            case "run":
+                asyncio.run(daemon.run_scan())
+                audit_library(settings, fix=True)
             case "audit":
-                audit_library(settings)
+                audit_library(settings, fix=getattr(args, "fix", False))
             case "cleanup":
                 cleanup_directories(settings, dry_run=getattr(args, "dry_run", False))
             case _:
@@ -237,87 +235,9 @@ def rollback_moves(settings: Settings) -> None:
     print(f"Rollback complete: {restored} restored, {failed} failed.")
 
 
-def audit_library(settings: Settings) -> None:
-    scanner = LibraryScanner(settings.library)
-    suspects: list[
-        tuple[
-            Path,
-            dict[tuple[str, str], dict[str, object]],
-            dict[str, dict[str, object]],
-            bool,
-        ]
-    ] = []
-    library_roots = [root.resolve() for root in settings.library.roots]
-    for batch in scanner.iter_directories():
-        combos: dict[tuple[str, str], dict[str, object]] = {}
-        titles: dict[str, dict[str, object]] = {}
-        for path in batch.files:
-            tags = _read_basic_tags(path)
-            guess = guess_metadata_from_path(path)
-            artist = tags.get("albumartist") or tags.get("artist") or guess.artist
-            album = tags.get("album") or guess.album
-            norm_artist = _normalize_text(artist)
-            norm_album = _normalize_text(album)
-            key = (norm_artist or "unknown", norm_album or "unknown")
-            bucket = combos.setdefault(
-                key,
-                {
-                    "artist": artist or guess.artist or "Unknown Artist",
-                    "album": album or guess.album or "Unknown Album",
-                    "files": [],
-                },
-            )
-            bucket["files"].append(path.name)
-            raw_title = tags.get("title") or guess.title or path.stem
-            norm_title = _normalize_text(raw_title)
-            if norm_title:
-                title_bucket = titles.setdefault(
-                    norm_title,
-                    {
-                        "title": raw_title or path.stem,
-                        "files": [],
-                    },
-                )
-                title_bucket["files"].append(path.name)
-        if not combos:
-            continue
-        known_artists = {key[0] for key in combos if key[0] != "unknown"}
-        known_albums = {key[1] for key in combos if key[1] != "unknown"}
-        duplicate_titles = {key: info for key, info in titles.items() if len(info["files"]) > 1}
-        multi_combo = len(known_artists) > 1 or len(known_albums) > 1
-        if not multi_combo and not duplicate_titles:
-            continue
-        suspects.append((batch.directory, combos, duplicate_titles, multi_combo))
-    if not suspects:
-        print("No directories with mixed album, artist, or duplicate track metadata detected.")
-        return
-    suspects.sort(key=lambda entry: len(entry[1]), reverse=True)
-    print(f"Found {len(suspects)} directory/directories needing review:\n")
-    for directory, combos, duplicate_titles, multi_combo in suspects:
-        rel = _display_relative(directory, library_roots)
-        print(f"- {rel}")
-        if multi_combo:
-            print(f"    Multiple album/artist combinations ({len(combos)}):")
-            for (norm_artist, norm_album), info in sorted(combos.items()):
-                files: list[str] = info["files"]  # type: ignore[assignment]
-                sample = ", ".join(sorted(files)[:3])
-                extra = max(0, len(files) - 3)
-                if extra:
-                    sample = f"{sample}, +{extra} more"
-                artist_label = info["artist"]  # type: ignore[index]
-                album_label = info["album"]  # type: ignore[index]
-                print(f"      • {artist_label} – {album_label} ({len(files)} tracks): {sample}")
-        if duplicate_titles:
-            print("    Duplicate track titles detected:")
-            for key, info in sorted(duplicate_titles.items()):
-                files: list[str] = info["files"]  # type: ignore[assignment]
-                sample = ", ".join(sorted(files)[:3])
-                extra = max(0, len(files) - 3)
-                if extra:
-                    sample = f"{sample}, +{extra} more"
-                title_label = info["title"]  # type: ignore[index]
-                print(f"      • {title_label} ({len(files)} copies): {sample}")
-        print()
+def audit_library(settings: Settings, fix: bool = False) -> None:
+    """Run the tag-based relocation audit, optionally auto-fixing misplaced files."""
+    LibraryAuditor(settings).run(fix=fix)
 
 
 def cleanup_directories(settings: Settings, dry_run: bool = False) -> None:
@@ -347,51 +267,6 @@ def cleanup_directories(settings: Settings, dry_run: bool = False) -> None:
     )
     if not dry_run:
         print(f"Deleted {removed_files} files with non-audio content.")
-
-
-def _display_relative(path: Path, roots: list[Path]) -> str:
-    try:
-        resolved = path.resolve()
-    except FileNotFoundError:
-        resolved = path
-    for root in roots:
-        try:
-            return str(resolved.relative_to(root))
-        except ValueError:
-            continue
-    return str(path)
-
-
-def _read_basic_tags(path: Path) -> dict[str, str | None]:
-    try:
-        audio = MutagenFile(path, easy=True)
-    except Exception:
-        return {}
-    if not audio or not audio.tags:
-        return {}
-    def first(keys: list[str]) -> str | None:
-        for key in keys:
-            value = audio.tags.get(key)
-            if value:
-                if isinstance(value, list):
-                    return str(value[0])
-                return str(value)
-        return None
-    return {
-        "artist": first(["artist"]),
-        "albumartist": first(["albumartist", "album artist"]),
-        "album": first(["album"]),
-    }
-
-
-def _normalize_text(value: str | None) -> str | None:
-    if not value:
-        return None
-    cleaned = unicodedata.normalize("NFKD", value)
-    cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
-    cleaned = cleaned.lower()
-    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned).strip()
-    return cleaned or None
 
 
 def _directory_has_audio_files(path: Path, extensions: set[str]) -> bool:

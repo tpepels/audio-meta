@@ -31,7 +31,6 @@ classical:
 daemon:
   worker_concurrency: 4
   cache_path: ./cache/cache.sqlite3
-  defer_prompts: false
 
 organizer:
   enabled: false

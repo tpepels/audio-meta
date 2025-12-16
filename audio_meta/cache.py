@@ -61,9 +61,38 @@ class MetadataCache:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS directory_hashes (
+                directory_path TEXT PRIMARY KEY,
+                hash TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hash_releases (
+                directory_hash TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                score REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS ignored_directories (
                 directory_path TEXT PRIMARY KEY,
                 reason TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS deferred_prompts (
+                directory_path TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
             """
@@ -168,6 +197,9 @@ class MetadataCache:
     def clear_directory_releases(self) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM directory_releases")
+            self._conn.execute("DELETE FROM directory_hashes")
+            self._conn.execute("DELETE FROM hash_releases")
+            self._conn.execute("DELETE FROM deferred_prompts")
             self._conn.commit()
 
     def get_directory_release(self, directory: Path | str) -> Optional[tuple[str, str, float]]:
@@ -200,6 +232,55 @@ class MetadataCache:
             self._conn.execute(
                 "DELETE FROM directory_releases WHERE directory_path = ?",
                 (str(directory),),
+            )
+            self._conn.commit()
+
+    def get_directory_hash(self, directory: Path | str) -> Optional[str]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT hash FROM directory_hashes WHERE directory_path = ?",
+                (str(directory),),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return row[0]
+
+    def set_directory_hash(self, directory: Path | str, hash_value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO directory_hashes(directory_path, hash, updated_at)
+                VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(directory_path)
+                DO UPDATE SET hash=excluded.hash, updated_at=excluded.updated_at
+                """,
+                (str(directory), hash_value),
+            )
+            self._conn.commit()
+
+    def get_release_by_hash(self, directory_hash: str) -> Optional[tuple[str, str, float]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT provider, release_id, score FROM hash_releases WHERE directory_hash = ?",
+                (directory_hash,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        provider, release_id, score = row
+        return provider, release_id, float(score)
+
+    def set_release_by_hash(self, directory_hash: str, provider: str, release_id: str, score: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO hash_releases(directory_hash, provider, release_id, score, updated_at)
+                VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(directory_hash)
+                DO UPDATE SET provider=excluded.provider, release_id=excluded.release_id, score=excluded.score, updated_at=excluded.updated_at
+                """,
+                (directory_hash, provider, release_id, float(score)),
             )
             self._conn.commit()
 
@@ -257,3 +338,32 @@ class MetadataCache:
                 (namespace, key, payload),
             )
             self._conn.commit()
+
+    def add_deferred_prompt(self, directory: Path | str, reason: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO deferred_prompts(directory_path, reason, created_at)
+                VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(directory_path)
+                DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at
+                """,
+                (str(directory), reason),
+            )
+            self._conn.commit()
+
+    def remove_deferred_prompt(self, directory: Path | str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM deferred_prompts WHERE directory_path = ?",
+                (str(directory),),
+            )
+            self._conn.commit()
+
+    def list_deferred_prompts(self) -> list[tuple[str, str]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT directory_path, reason FROM deferred_prompts ORDER BY created_at"
+            )
+            rows = cursor.fetchall()
+        return [(row[0], row[1]) for row in rows]

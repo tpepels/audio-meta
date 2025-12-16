@@ -51,6 +51,12 @@ class TagWriter:
                 }
         return changes
 
+    def read_existing_tags(self, meta: TrackMetadata) -> Optional[Dict[str, Optional[str]]]:
+        ext = meta.path.suffix.lower()
+        if ext not in self.SUPPORTED_EXTS:
+            return None
+        return self._read_tags(meta, ext)
+
     def _desired_map(self, meta: TrackMetadata) -> Dict[str, Optional[str]]:
         mapping = {
             "title": meta.title,
@@ -77,6 +83,7 @@ class TagWriter:
                     "genre": self._id3_text(tags, "TCON"),
                     "work": self._id3_text(tags, "TIT1"),
                     "movement": self._id3_text(tags, "MVNM"),
+                    "tracknumber": self._id3_text(tags, "TRCK"),
                 }
             if ext == ".flac":
                 audio = FLAC(meta.path)
@@ -89,9 +96,16 @@ class TagWriter:
                     "genre": audio.get("GENRE", [None])[0],
                     "work": audio.get("WORK", [None])[0],
                     "movement": audio.get("MOVEMENT", [None])[0],
+                    "tracknumber": audio.get("TRACKNUMBER", [None])[0],
                 }
             if ext == ".m4a":
                 audio = MP4(meta.path)
+                track_info = audio.get("trkn")
+                track_number = None
+                if track_info and isinstance(track_info, list) and track_info:
+                    first = track_info[0]
+                    if isinstance(first, (tuple, list)) and first:
+                        track_number = str(first[0])
                 return {
                     "title": self._mp4_text(audio, "\xa9nam"),
                     "album": self._mp4_text(audio, "\xa9alb"),
@@ -101,6 +115,7 @@ class TagWriter:
                     "genre": self._mp4_text(audio, "\xa9gen"),
                     "work": self._mp4_text(audio, "----:com.apple.iTunes:WORK"),
                     "movement": self._mp4_text(audio, "----:com.apple.iTunes:MOVEMENT"),
+                    "tracknumber": track_number,
                 }
         except Exception as exc:  # pragma: no cover - depends on local files
             logger.debug("Failed to read tags for %s: %s", meta.path, exc)

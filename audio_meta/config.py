@@ -34,7 +34,6 @@ class ProviderSettings(BaseModel):
 class DaemonSettings(BaseModel):
     worker_concurrency: int = 4
     cache_path: Path = Path("./cache/cache.sqlite3")
-    defer_prompts: bool = False
 
     @field_validator("cache_path", mode="before")
     @classmethod
