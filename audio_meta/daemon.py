@@ -1067,10 +1067,27 @@ class AudioMetaDaemon:
         if not self.discogs:
             return []
         guess = guess_metadata_from_path(meta.path)
-        artist = meta.album_artist or meta.artist or guess.artist
-        album = meta.album or guess.album
-        title = meta.title or guess.title
-        results = self.discogs.search_candidates(artist=artist, album=album, title=title, limit=5)
+        artist_hint = meta.album_artist or meta.artist
+        if artist_hint and guess.artist:
+            if self._token_overlap_ratio(artist_hint, guess.artist) < 0.35:
+                artist_hint = guess.artist
+        elif not artist_hint:
+            artist_hint = guess.artist
+        album_hint = meta.album
+        if album_hint and guess.album:
+            if self._token_overlap_ratio(album_hint, guess.album) < 0.35:
+                album_hint = guess.album
+        elif not album_hint:
+            album_hint = guess.album
+        title_hint = meta.title
+        if title_hint and guess.title:
+            if self._token_overlap_ratio(title_hint, guess.title) < 0.35:
+                title_hint = guess.title
+        elif not title_hint:
+            title_hint = guess.title
+        if not artist_hint and not album_hint and not title_hint:
+            return []
+        results = self.discogs.search_candidates(artist=artist_hint, album=album_hint, title=title_hint, limit=5)
         candidates = []
         for item in results:
             release_id = item.get("id")
@@ -1083,15 +1100,15 @@ class AudioMetaDaemon:
                 track_count = len([t for t in tracklist if t.get("type_", "track") == "track"])
             formats, disc_count = self._discogs_format_details(item, details)
             artist_name = self._discogs_release_artist(details) or item.get("artist") or item.get("label")
-            title_hint = (details or {}).get("title") or item.get("title")
-            artist_similarity = self._token_overlap_ratio(artist, artist_name)
-            album_similarity = self._token_overlap_ratio(album, title_hint)
+            title_value = (details or {}).get("title") or item.get("title")
+            artist_similarity = self._token_overlap_ratio(artist_hint, artist_name)
+            album_similarity = self._token_overlap_ratio(album_hint, title_value)
             if artist_similarity < 0.2 and album_similarity < 0.2:
                 continue
             candidates.append(
                 {
                     "id": release_id,
-                    "title": title_hint,
+                    "title": title_value,
                     "artist": artist_name,
                     "year": (details or {}).get("year") or item.get("year"),
                     "track_count": track_count,
