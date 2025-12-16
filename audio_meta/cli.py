@@ -210,8 +210,16 @@ def rollback_moves(settings: Settings) -> None:
     for source_str, target_str in moves:
         source = Path(source_str)
         target = Path(target_str)
-        if not target.exists():
+        try:
+            target_exists = target.exists()
+        except OSError as exc:
+            logging.warning("Cannot restore %s -> %s: %s", target, source, exc)
+            cache.delete_move(source)
+            failed += 1
+            continue
+        if not target_exists:
             logging.warning("Cannot restore %s -> %s: target missing", target, source)
+            cache.delete_move(source)
             failed += 1
             continue
         source.parent.mkdir(parents=True, exist_ok=True)
