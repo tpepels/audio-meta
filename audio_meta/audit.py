@@ -291,10 +291,10 @@ class LibraryAuditor:
             return ""
         normalized = unicodedata.normalize("NFKD", value)
         ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
-        ascii_only = re.sub(r"[&;,/]+", " ", ascii_only)
-        ascii_only = re.sub(r"\s+", " ", ascii_only).strip().lower()
+        ascii_only = ascii_only.lower()
+        ascii_only = re.sub(r"[^a-z0-9]+", " ", ascii_only)
+        ascii_only = re.sub(r"\s+", " ", ascii_only).strip()
         return ascii_only
-        return entries
 
     def _find_release_home(self, release_id: Optional[str], current_dir: Path) -> Optional[Path]:
         if not self.cache or not release_id:
