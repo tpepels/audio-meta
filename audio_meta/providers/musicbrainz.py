@@ -224,29 +224,9 @@ class MusicBrainzClient:
 
         release_match = self.release_tracker.match(meta.path.parent, guess, meta.duration_seconds)
         if release_match:
-            recording = self._fetch_recording(release_match.track.recording_id, meta.path)
-            if recording:
-                self._apply_recording(
-                    meta,
-                    recording,
-                    release_match.track.title or recording.get("title"),
-                    self._first_artist(recording),
-                    preferred_release_id=release_match.release.release_id,
-                    release_hint_title=release_match.release.album_title,
-                    release_hint_artist=release_match.release.album_artist,
-                    album_hint=release_match.release.album_title,
-                )
-                score = release_match.confidence
-                meta.match_confidence = max(meta.match_confidence or 0.0, score)
-                self._after_match(meta)
-                logger.debug(
-                    "Release memory matched %s as track %s of release %s",
-                    meta.path,
-                    release_match.track.title,
-                    release_match.release.release_id,
-                )
-                self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
-                return LookupResult(meta, score=score)
+            lookup = self.apply_release_match(meta, release_match)
+            if lookup:
+                return lookup
         return None
 
     def _lookup_by_fingerprint(
@@ -614,6 +594,32 @@ class MusicBrainzClient:
                 )
         return data
 
+    def apply_release_match(self, meta: TrackMetadata, release_match: ReleaseMatch) -> Optional[LookupResult]:
+        recording = self._fetch_recording(release_match.track.recording_id, meta.path)
+        if not recording:
+            return None
+        self._apply_recording(
+            meta,
+            recording,
+            release_match.track.title or recording.get("title"),
+            self._first_artist(recording),
+            preferred_release_id=release_match.release.release_id,
+            release_hint_title=release_match.release.album_title,
+            release_hint_artist=release_match.release.album_artist,
+            album_hint=release_match.release.album_title,
+        )
+        score = release_match.confidence
+        meta.match_confidence = max(meta.match_confidence or 0.0, score)
+        self._after_match(meta)
+        logger.debug(
+            "Release memory matched %s as track %s of release %s",
+            meta.path,
+            release_match.track.title,
+            release_match.release.release_id,
+        )
+        self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)
+        return LookupResult(meta, score=score)
+
     def _after_match(self, meta: TrackMetadata) -> None:
         release_id = meta.musicbrainz_release_id
         if not release_id:
@@ -676,3 +682,51 @@ class MusicBrainzClient:
         if candidate and candidate.get("id"):
             return candidate.get("id"), candidate.get("title"), self._first_artist(candidate)
         return None, None, None
+
+    def search_release_candidates(
+        self,
+        artist_hint: Optional[str],
+        album_hint: Optional[str],
+        limit: int = 5,
+    ) -> List[dict]:
+        query: Dict[str, str] = {}
+        if artist_hint:
+            query["artist"] = artist_hint
+        if album_hint:
+            query["release"] = album_hint
+        if not query:
+            return []
+        try:
+            response = musicbrainzngs.search_releases(limit=limit, **query)
+        except musicbrainzngs.ResponseError as exc:
+            logger.debug("Release search failed for %s/%s: %s", artist_hint, album_hint, exc)
+            return []
+        releases = response.get("release-list", [])
+        candidates: List[dict] = []
+        for entry in releases:
+            release_id = entry.get("id")
+            if not release_id:
+                continue
+            data = self._fetch_release_tracks(release_id)
+            if data and release_id not in self.release_tracker.releases:
+                self.release_tracker.releases[release_id] = data
+            title = data.album_title if data and data.album_title else entry.get("title")
+            artist = data.album_artist if data and data.album_artist else self._first_artist(entry)
+            date = data.release_date if data and data.release_date else entry.get("date")
+            track_total = len(data.tracks) if data and data.tracks else None
+            disc_count = data.disc_count if data else None
+            formats = list(data.formats) if data else []
+            score = float(entry.get("ext-score", 0)) / 100.0 if entry.get("ext-score") else 0.0
+            candidates.append(
+                {
+                    "id": release_id,
+                    "title": title,
+                    "artist": artist,
+                    "date": date,
+                    "score": score,
+                    "track_total": track_total,
+                    "disc_count": disc_count,
+                    "formats": formats,
+                }
+            )
+        return candidates

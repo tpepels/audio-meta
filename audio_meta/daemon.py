@@ -72,6 +72,13 @@ class ReleaseExample:
     formats: list[str]
 
 
+@dataclass
+class PendingResult:
+    meta: TrackMetadata
+    result: Optional[LookupResult]
+    matched: bool
+
+
 class _WatchHandler(FileSystemEventHandler):
     def __init__(self, queue: asyncio.Queue[DirectoryBatch], exts: Iterable[str], scanner: LibraryScanner) -> None:
         super().__init__()
@@ -115,6 +122,8 @@ class AudioMetaDaemon:
         self.observer: Observer | None = None
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
         self.interactive = interactive
+        self.skip_reasons: dict[Path, str] = {}
+        self._skip_lock = Lock()
         if self.dry_run_recorder:
             logger.debug("Dry-run mode enabled; writing preview to %s", dry_run_output)
 
@@ -174,7 +183,7 @@ class AudioMetaDaemon:
     def _process_directory(self, batch: DirectoryBatch) -> None:
         planned: list[PlannedUpdate] = []
         logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
-        pending_results: list[tuple[TrackMetadata, Optional[LookupResult], bool]] = []
+        pending_results: list[PendingResult] = []
         release_scores: dict[str, float] = {}
         release_examples: dict[str, ReleaseExample] = {}
         dir_track_count, dir_year = self._directory_context(batch.directory, batch.files)
@@ -215,7 +224,7 @@ class AudioMetaDaemon:
                     result = self.discogs.enrich(meta)
                 except Exception:
                     logger.exception("Discogs lookup failed for %s", file_path)
-            pending_results.append((meta, result, bool(result)))
+            pending_results.append(PendingResult(meta=meta, result=result, matched=bool(result)))
             if result and meta.musicbrainz_release_id:
                 release_id = meta.musicbrainz_release_id
                 release_scores[release_id] = max(release_scores.get(release_id, 0.0), result.score)
@@ -228,6 +237,48 @@ class AudioMetaDaemon:
                     disc_count=release_data.disc_count if release_data and release_data.disc_count else None,
                     formats=list(release_data.formats) if release_data else [],
                 )
+        discogs_release_details = None
+        if not release_scores and self.interactive and pending_results:
+            sample_meta = pending_results[0].meta if pending_results else None
+            selection = self._resolve_unmatched_directory(
+                batch.directory,
+                sample_meta,
+                dir_track_count,
+                dir_year,
+            )
+            if selection is None:
+                logger.warning("Skipping %s; no manual release selected", batch.directory)
+                return
+            provider, selection_id = selection
+            if provider == "discogs":
+                if not self.discogs:
+                    self._record_skip(batch.directory, "Discogs provider unavailable for manual selection")
+                    logger.warning("Discogs provider unavailable; cannot apply manual selection for %s", batch.directory)
+                    return
+                discogs_release_details = self.discogs.get_release(int(selection_id))
+                if not discogs_release_details:
+                    self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
+                    logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
+                    return
+                self._apply_discogs_release_details(pending_results, discogs_release_details)
+            else:
+                applied = self._apply_musicbrainz_release_selection(batch.directory, selection_id, pending_results)
+                if not applied:
+                    self._record_skip(batch.directory, f"Manual MusicBrainz release {selection_id} did not match tracks")
+                    logger.warning("Manual MusicBrainz release %s did not match tracks in %s", selection_id, batch.directory)
+                    return
+                release_data = self.musicbrainz.release_tracker.releases.get(selection_id)
+                if release_data:
+                    release_examples[selection_id] = ReleaseExample(
+                        title=release_data.album_title or "",
+                        artist=release_data.album_artist or "",
+                        date=release_data.release_date,
+                        track_total=len(release_data.tracks) if release_data.tracks else None,
+                        disc_count=release_data.disc_count or None,
+                        formats=list(release_data.formats),
+                    )
+                release_scores[selection_id] = max(release_scores.get(selection_id, 0.0), 1.0)
+
         release_scores = self._adjust_release_scores(release_scores, release_examples, dir_track_count, dir_year)
         best_release_id = None
         best_score = 0.0
@@ -239,10 +290,9 @@ class AudioMetaDaemon:
         ambiguous_candidates = [
             (rid, score) for rid, score in release_scores.items() if best_release_id and best_score - score <= ambiguous_cutoff
         ]
-        discogs_release_details = None
         if best_release_id and len(ambiguous_candidates) > 1:
             if self.interactive:
-                sample_meta = pending_results[0][0] if pending_results else None
+                sample_meta = pending_results[0].meta if pending_results else None
                 selection = self._resolve_release_interactively(
                     batch.directory,
                     ambiguous_candidates,
@@ -252,15 +302,18 @@ class AudioMetaDaemon:
                     dir_year,
                 )
                 if selection is None:
+                    self._record_skip(batch.directory, "User skipped ambiguous release selection")
                     logger.warning("Skipping %s per user choice", batch.directory)
                     return
                 provider, selection_id = selection
                 if provider == "discogs":
                     if not self.discogs:
+                        self._record_skip(batch.directory, "Discogs provider unavailable for manual selection")
                         logger.warning("Discogs provider unavailable; cannot use selection for %s", batch.directory)
                         return
                     discogs_release_details = self.discogs.get_release(int(selection_id))
                     if not discogs_release_details:
+                        self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
                         logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                         return
                     best_release_id = None
@@ -281,6 +334,7 @@ class AudioMetaDaemon:
                     dir_track_count,
                     dir_year,
                 )
+                self._record_skip(batch.directory, "Ambiguous release matches in non-interactive mode")
                 return
         if best_release_id:
             example = release_examples.get(best_release_id)
@@ -289,10 +343,14 @@ class AudioMetaDaemon:
         else:
             album_name = album_artist = ""
 
-        for meta, result, matched in pending_results:
+        for pending in pending_results:
+            meta = pending.meta
+            result = pending.result
+            matched = pending.matched
             if discogs_release_details:
                 self.discogs.apply_release_details(meta, discogs_release_details, allow_overwrite=True)
                 matched = True
+                pending.matched = True
             if not matched:
                 logger.warning("No metadata match for %s; leaving file untouched", meta.path)
                 continue
@@ -316,6 +374,8 @@ class AudioMetaDaemon:
             )
 
         if not planned:
+            if not any(p.matched for p in pending_results):
+                self._record_skip(batch.directory, "No metadata match found for directory")
             logger.debug("No actionable files in %s", batch.directory)
             return
         for plan in planned:
@@ -363,6 +423,10 @@ class AudioMetaDaemon:
 
     def _needs_supplement(self, meta: TrackMetadata) -> bool:
         return not meta.album or not meta.artist or not meta.album_artist
+
+    def _record_skip(self, directory: Path, reason: str) -> None:
+        with self._skip_lock:
+            self.skip_reasons[directory] = reason
 
     def _adjust_release_scores(
         self,
@@ -467,6 +531,7 @@ class AudioMetaDaemon:
                 options.append({"idx": idx, "provider": "discogs", "id": cand["id"], "label": label})
                 idx += 1
         if not options:
+            self._record_skip(directory, "No interactive release options available")
             logger.warning("No interactive options available for %s", directory)
             return None
         year_hint = f"{dir_year}" if dir_year else "unknown"
@@ -487,6 +552,120 @@ class AudioMetaDaemon:
                 print("Selection out of range.")
                 continue
             return match["provider"], match["id"]
+
+    def _resolve_unmatched_directory(
+        self,
+        directory: Path,
+        sample_meta: Optional[TrackMetadata],
+        dir_track_count: int,
+        dir_year: Optional[int],
+    ) -> Optional[tuple[str, str]]:
+        if not sample_meta:
+            self._record_skip(directory, "No sample metadata for manual selection")
+            return None
+        artist_hint, album_hint = self._directory_hints(sample_meta, directory)
+        options: list[dict] = []
+        idx = 1
+        mb_candidates = self.musicbrainz.search_release_candidates(artist_hint, album_hint, limit=6)
+        for cand in mb_candidates:
+            year = self._parse_year(cand.get("date")) or "?"
+            track_count = cand.get("track_total") or "?"
+            disc_label = self._disc_label(cand.get("disc_count")) or "disc count unknown"
+            format_label = ", ".join(cand.get("formats") or []) or "format unknown"
+            score = cand.get("score")
+            label = (
+                f"[MusicBrainz] {cand.get('title') or 'Unknown Title'} ({year}) – {cand.get('artist') or 'Unknown Artist'} "
+                f"[tracks: {track_count}; {disc_label}; {format_label}] score {score:.2f}"
+            )
+            options.append({"idx": idx, "provider": "musicbrainz", "id": cand["id"], "label": label})
+            idx += 1
+        if self.discogs and sample_meta:
+            for cand in self._discogs_candidates(sample_meta):
+                label = (
+                    f"[Discogs] {cand.get('title') or 'Unknown Title'} ({cand.get('year') or '?'}) – {cand.get('artist') or 'Unknown'} "
+                    f"[tracks: {cand.get('track_count') or '?'}; "
+                    f"{cand.get('disc_label') or 'disc count unknown'}; "
+                    f"{cand.get('format_label') or 'format unknown'}] "
+                    f"(release {cand['id']})"
+                )
+                options.append({"idx": idx, "provider": "discogs", "id": cand["id"], "label": label})
+                idx += 1
+        if not options:
+            self._record_skip(directory, "No manual candidates available")
+            logger.warning("No manual candidates available for %s (artist hint=%s, album hint=%s)", directory, artist_hint, album_hint)
+            return None
+        year_hint = f"{dir_year}" if dir_year else "unknown"
+        print(
+            f"\nNo automatic metadata match for {directory} "
+            f"(artist hint: {artist_hint or 'unknown'}, album hint: {album_hint or 'unknown'}, "
+            f"{dir_track_count} tracks detected, year hint {year_hint})."
+        )
+        print("Select a release to apply:")
+        for option in options:
+            print(f"  {option['idx']}. {option['label']}")
+        print("  0. Skip this directory")
+        while True:
+            choice = input("Select release (0=skip): ").strip()
+            if choice.lower() in {"0", "s", "skip"}:
+                self._record_skip(directory, "User skipped manual release selection")
+                return None
+            if not choice.isdigit():
+                print("Invalid selection; enter a number.")
+                continue
+            number = int(choice)
+            match = next((opt for opt in options if opt["idx"] == number), None)
+            if not match:
+                print("Selection out of range.")
+                continue
+            return match["provider"], match["id"]
+
+    def _directory_hints(self, sample_meta: TrackMetadata, directory: Path) -> tuple[Optional[str], Optional[str]]:
+        guess = guess_metadata_from_path(sample_meta.path)
+        artist_hint = sample_meta.album_artist or sample_meta.artist or guess.artist or directory.parent.name
+        album_hint = sample_meta.album or guess.album or directory.name
+        return artist_hint, album_hint
+
+    def _apply_discogs_release_details(self, pending_results: list[PendingResult], release_details: dict) -> None:
+        if not self.discogs:
+            return
+        for pending in pending_results:
+            self.discogs.apply_release_details(pending.meta, release_details, allow_overwrite=True)
+            score = pending.meta.match_confidence or 0.4
+            pending.meta.match_confidence = score
+            pending.result = LookupResult(pending.meta, score=score)
+            pending.matched = True
+
+    def _apply_musicbrainz_release_selection(
+        self,
+        directory: Path,
+        release_id: str,
+        pending_results: list[PendingResult],
+    ) -> bool:
+        self.musicbrainz.release_tracker.register(
+            directory,
+            release_id,
+            self.musicbrainz._fetch_release_tracks,
+        )
+        self.musicbrainz.release_tracker.remember_release(directory, release_id, 1.0)
+        applied = False
+        for pending in pending_results:
+            if pending.matched:
+                applied = True
+                continue
+            if not pending.meta.duration_seconds:
+                duration = self.musicbrainz._probe_duration(pending.meta.path)
+                if duration:
+                    pending.meta.duration_seconds = duration
+            guess = guess_metadata_from_path(pending.meta.path)
+            release_match = self.musicbrainz.release_tracker.match(directory, guess, pending.meta.duration_seconds)
+            if not release_match:
+                continue
+            lookup = self.musicbrainz.apply_release_match(pending.meta, release_match)
+            if lookup:
+                pending.result = lookup
+                pending.matched = True
+                applied = True
+        return applied
 
     def _discogs_candidates(self, meta: TrackMetadata) -> list[dict]:
         if not self.discogs:
@@ -599,3 +778,13 @@ class AudioMetaDaemon:
             return int(match.group(0))
         except ValueError:
             return None
+
+    def report_skips(self) -> None:
+        with self._skip_lock:
+            entries = list(self.skip_reasons.items())
+            self.skip_reasons.clear()
+        if not entries:
+            return
+        print("\n\033[33mDirectories skipped:\033[0m")
+        for directory, reason in sorted(entries):
+            print(f" - {directory}: {reason}")

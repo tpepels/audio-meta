@@ -103,6 +103,7 @@ def main() -> None:
             case _:
                 parser.error("Unknown command")
     finally:
+        daemon.report_skips()
         if warn_buffer.records:
             print("\n\033[33mWarnings/Errors summary:\033[0m")
             for line in warn_buffer.records:
