@@ -125,6 +125,7 @@ class AudioMetaDaemon:
         self.interactive = interactive
         self.skip_reasons: dict[Path, str] = {}
         self._skip_lock = Lock()
+        self._processed_albums: set[Path] = set()
         self._library_roots = [root.resolve() for root in settings.library.roots]
         if self.dry_run_recorder:
             logger.debug("Dry-run mode enabled; writing preview to %s", dry_run_output)
@@ -183,6 +184,10 @@ class AudioMetaDaemon:
                 self.queue.task_done()
 
     def _process_directory(self, batch: DirectoryBatch) -> None:
+        prepared = self._prepare_album_batch(batch)
+        if not prepared:
+            return
+        batch = prepared
         planned: list[PlannedUpdate] = []
         logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
         pending_results: list[PendingResult] = []
@@ -553,7 +558,6 @@ class AudioMetaDaemon:
         dir_track_count: int,
         dir_year: Optional[int],
     ) -> Optional[tuple[str, str]]:
-        options: list[dict] = []
         idx = 1
         for release_id, score in sorted(mb_candidates, key=lambda x: x[1], reverse=True):
             example = release_examples.get(release_id)
@@ -566,27 +570,49 @@ class AudioMetaDaemon:
             formats = release.formats if release else example.formats if example else []
             disc_label = self._disc_label(disc_count) or "disc count unknown"
             format_label = ", ".join(formats) if formats else "format unknown"
-            label = (
-                f"[MusicBrainz] {title or 'Unknown Title'} ({year}) – {artist or 'Unknown Artist'} "
-                f"[tracks: {track_count or '?'}; {disc_label}; {format_label}] score {score:.2f} ({release_id})"
+            label = self._format_option_label(
+                idx,
+                "MB",
+                artist or "Unknown Artist",
+                title or "Unknown Title",
+                year,
+                track_count or "?",
+                disc_label,
+                format_label,
+                score,
+                release_id,
             )
-            options.append({"idx": idx, "provider": "musicbrainz", "id": release_id, "label": label})
+            options.append({"idx": idx, "provider": "musicbrainz", "id": release_id, "label": label, "score": score})
             idx += 1
         if sample_meta and self.discogs:
             for cand in self._discogs_candidates(sample_meta):
-                label = (
-                    f"[Discogs] {cand.get('title') or 'Unknown Title'} ({cand.get('year') or '?'}) – {cand.get('artist') or 'Unknown'} "
-                    f"[tracks: {cand.get('track_count') or '?'}; "
-                    f"{cand.get('disc_label') or 'disc count unknown'}; "
-                    f"{cand.get('format_label') or 'format unknown'}] "
-                    f"(release {cand['id']})"
+                label = self._format_option_label(
+                    idx,
+                    "DG",
+                    cand.get("artist") or "Unknown",
+                    cand.get("title") or "Unknown Title",
+                    cand.get("year") or "?",
+                    cand.get("track_count") or "?",
+                    cand.get("disc_label") or "disc count unknown",
+                    cand.get("format_label") or "format unknown",
+                    None,
+                    cand["id"],
                 )
-                options.append({"idx": idx, "provider": "discogs", "id": cand["id"], "label": label})
+                options.append(
+                    {
+                        "idx": idx,
+                        "provider": "discogs",
+                        "id": cand["id"],
+                        "label": label,
+                        "score": cand.get("score", 0.0),
+                    }
+                )
                 idx += 1
         if not options:
             self._record_skip(directory, "No interactive release options available")
             logger.warning("No interactive options available for %s", directory)
             return None
+        options.sort(key=lambda opt: opt.get("score", 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self._display_path(directory)
         print(f"\nAmbiguous release for {display} – {dir_track_count} tracks detected, year hint {year_hint}:")
@@ -618,7 +644,6 @@ class AudioMetaDaemon:
             self._record_skip(directory, "No sample metadata for manual selection")
             return None
         artist_hint, album_hint = self._directory_hints(sample_meta, directory)
-        options: list[dict] = []
         idx = 1
         mb_candidates = self.musicbrainz.search_release_candidates(artist_hint, album_hint, limit=6)
         for cand in mb_candidates:
@@ -627,27 +652,49 @@ class AudioMetaDaemon:
             disc_label = self._disc_label(cand.get("disc_count")) or "disc count unknown"
             format_label = ", ".join(cand.get("formats") or []) or "format unknown"
             score = cand.get("score")
-            label = (
-                f"[MusicBrainz] {cand.get('title') or 'Unknown Title'} ({year}) – {cand.get('artist') or 'Unknown Artist'} "
-                f"[tracks: {track_count}; {disc_label}; {format_label}] score {score:.2f}"
+            label = self._format_option_label(
+                idx,
+                "MB",
+                cand.get("artist") or "Unknown Artist",
+                cand.get("title") or "Unknown Title",
+                year,
+                track_count,
+                disc_label,
+                format_label,
+                score,
+                cand["id"],
             )
-            options.append({"idx": idx, "provider": "musicbrainz", "id": cand["id"], "label": label})
+            options.append({"idx": idx, "provider": "musicbrainz", "id": cand["id"], "label": label, "score": score})
             idx += 1
         if self.discogs and sample_meta:
             for cand in self._discogs_candidates(sample_meta):
-                label = (
-                    f"[Discogs] {cand.get('title') or 'Unknown Title'} ({cand.get('year') or '?'}) – {cand.get('artist') or 'Unknown'} "
-                    f"[tracks: {cand.get('track_count') or '?'}; "
-                    f"{cand.get('disc_label') or 'disc count unknown'}; "
-                    f"{cand.get('format_label') or 'format unknown'}] "
-                    f"(release {cand['id']})"
+                label = self._format_option_label(
+                    idx,
+                    "DG",
+                    cand.get("artist") or "Unknown",
+                    cand.get("title") or "Unknown Title",
+                    cand.get("year") or "?",
+                    cand.get("track_count") or "?",
+                    cand.get("disc_label") or "disc count unknown",
+                    cand.get("format_label") or "format unknown",
+                    None,
+                    cand["id"],
                 )
-                options.append({"idx": idx, "provider": "discogs", "id": cand["id"], "label": label})
+                options.append(
+                    {
+                        "idx": idx,
+                        "provider": "discogs",
+                        "id": cand["id"],
+                        "label": label,
+                        "score": cand.get("score", 0.0),
+                    }
+                )
                 idx += 1
         if not options:
             self._record_skip(directory, "No manual candidates available")
             logger.warning("No manual candidates available for %s (artist hint=%s, album hint=%s)", directory, artist_hint, album_hint)
             return None
+        options.sort(key=lambda opt: opt.get("score", 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self._display_path(directory)
         print(
@@ -971,6 +1018,60 @@ class AudioMetaDaemon:
             except ValueError:
                 continue
         return str(path)
+
+    def _prepare_album_batch(self, batch: DirectoryBatch) -> Optional[DirectoryBatch]:
+        directory = batch.directory
+        album_root = self._album_root(directory)
+        try:
+            resolved_root = album_root.resolve()
+        except FileNotFoundError:
+            resolved_root = album_root
+        if resolved_root in self._processed_albums:
+            logger.debug("Album %s already processed; skipping %s", album_root, directory)
+            return None
+        self._processed_albums.add(resolved_root)
+        disc_dirs = self._disc_directories(album_root)
+        files: list[Path] = []
+        seen: set[Path] = set()
+
+        def _add_files(paths: list[Path]) -> None:
+            for path in paths:
+                if path not in seen:
+                    files.append(path)
+                    seen.add(path)
+
+        if album_root == directory:
+            _add_files(batch.files)
+        else:
+            root_batch = self.scanner.collect_directory(album_root)
+            if root_batch:
+                _add_files(root_batch.files)
+        for disc_dir in disc_dirs:
+            if disc_dir == directory:
+                _add_files(batch.files)
+            else:
+                sub_batch = self.scanner.collect_directory(disc_dir)
+                if sub_batch:
+                    _add_files(sub_batch.files)
+        if not files:
+            return None
+        return DirectoryBatch(directory=album_root, files=files)
+
+    def _album_root(self, directory: Path) -> Path:
+        if self._looks_like_disc_folder(directory.name) and directory.parent != directory:
+            return directory.parent
+        return directory
+
+    def _disc_directories(self, album_root: Path) -> list[Path]:
+        discs: list[Path] = []
+        try:
+            entries = list(album_root.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            return discs
+        for entry in entries:
+            if entry.is_dir() and self._looks_like_disc_folder(entry.name):
+                discs.append(entry)
+        return sorted(discs)
 
     def _persist_directory_release(
         self,
