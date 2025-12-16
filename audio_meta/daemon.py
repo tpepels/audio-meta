@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,14 @@ from .tagging import TagWriter
 from .cache import MetadataCache
 
 logger = logging.getLogger(__name__)
+
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_DIM = "\033[2m"
+ANSI_MAGENTA = "\033[35m"
+ANSI_CYAN = "\033[36m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
 
 
 class DryRunRecorder:
@@ -123,6 +132,7 @@ class AudioMetaDaemon:
         self.observer: Observer | None = None
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
         self.interactive = interactive
+        self._use_color = sys.stdout.isatty()
         self.skip_reasons: dict[Path, str] = {}
         self._skip_lock = Lock()
         self._processed_albums: set[Path] = set()
@@ -558,6 +568,7 @@ class AudioMetaDaemon:
         dir_track_count: int,
         dir_year: Optional[int],
     ) -> Optional[tuple[str, str]]:
+        options: list[dict] = []
         idx = 1
         for release_id, score in sorted(mb_candidates, key=lambda x: x[1], reverse=True):
             example = release_examples.get(release_id)
@@ -644,6 +655,7 @@ class AudioMetaDaemon:
             self._record_skip(directory, "No sample metadata for manual selection")
             return None
         artist_hint, album_hint = self._directory_hints(sample_meta, directory)
+        options: list[dict] = []
         idx = 1
         mb_candidates = self.musicbrainz.search_release_candidates(artist_hint, album_hint, limit=6)
         for cand in mb_candidates:
@@ -880,6 +892,42 @@ class AudioMetaDaemon:
         if not disc_count:
             return None
         return f"{disc_count} disc{'s' if disc_count > 1 else ''}"
+
+    def _style(self, text: str, *codes: str) -> str:
+        if not text:
+            return text
+        if not self._use_color or not codes:
+            return text
+        prefix = "".join(codes)
+        return f"{prefix}{text}{ANSI_RESET}"
+
+    def _format_option_label(
+        self,
+        index: int,
+        provider_tag: str,
+        artist: str,
+        title: str,
+        year: str,
+        track_count: str,
+        disc_label: str,
+        format_label: str,
+        score: Optional[float],
+        release_id: str,
+    ) -> str:
+        provider = self._style(f"[{provider_tag}]", ANSI_BOLD, ANSI_MAGENTA)
+        artist_fmt = self._style(artist, ANSI_BOLD, ANSI_GREEN)
+        title_fmt = self._style(title, ANSI_BOLD, ANSI_CYAN)
+        year_fmt = self._style(str(year), ANSI_BOLD, ANSI_YELLOW)
+        stats = f"{track_count} tracks · {disc_label} · {format_label}".strip()
+        stats_fmt = self._style(stats, ANSI_DIM)
+        score_fmt = self._style(f"score {score:.2f}", ANSI_DIM) if score is not None else ""
+        release_fmt = self._style(release_id, ANSI_DIM)
+        sections = [provider, f"{artist_fmt} – {title_fmt}", f"({year_fmt})"]
+        sections.append(f"\t{stats_fmt}")
+        if score_fmt:
+            sections.append(f"\t{score_fmt}")
+        sections.append(f"\t{release_fmt}")
+        return " ".join(section for section in sections if section)
 
     def _directory_context(self, directory: Path, files: list[Path]) -> tuple[int, Optional[int]]:
         return len(files), self._infer_year_from_directory(directory)
