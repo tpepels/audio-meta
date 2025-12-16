@@ -539,7 +539,7 @@ class AudioMetaDaemon:
         logger.warning(
             "Ambiguous release detection for %s (%s) – multiple albums scored similarly: %s. "
             "Skipping this directory; adjust tags or split folders, then rerun.",
-            directory,
+            self._display_path(directory),
             hint,
             entries,
         )
@@ -588,7 +588,8 @@ class AudioMetaDaemon:
             logger.warning("No interactive options available for %s", directory)
             return None
         year_hint = f"{dir_year}" if dir_year else "unknown"
-        print(f"\nAmbiguous release for {directory} – {dir_track_count} tracks detected, year hint {year_hint}:")
+        display = self._display_path(directory)
+        print(f"\nAmbiguous release for {display} – {dir_track_count} tracks detected, year hint {year_hint}:")
         for option in options:
             print(f"  {option['idx']}. {option['label']}")
         print("  0. Skip this directory")
@@ -648,8 +649,9 @@ class AudioMetaDaemon:
             logger.warning("No manual candidates available for %s (artist hint=%s, album hint=%s)", directory, artist_hint, album_hint)
             return None
         year_hint = f"{dir_year}" if dir_year else "unknown"
+        display = self._display_path(directory)
         print(
-            f"\nNo automatic metadata match for {directory} "
+            f"\nNo automatic metadata match for {display} "
             f"(artist hint: {artist_hint or 'unknown'}, album hint: {album_hint or 'unknown'}, "
             f"{dir_track_count} tracks detected, year hint {year_hint})."
         )
@@ -866,7 +868,8 @@ class AudioMetaDaemon:
             return
         print("\n\033[33mDirectories skipped:\033[0m")
         for directory, reason in sorted(entries):
-            print(f" - {directory}: {reason}")
+            display = self._display_path(directory)
+            print(f" - {display}: {reason}")
 
     def _cached_release_for_directory(self, directory: Path) -> Optional[tuple[str, str, float]]:
         for key in self._directory_release_keys(directory):
@@ -955,6 +958,19 @@ class AudioMetaDaemon:
         cleaned = cleaned.lower()
         cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
         return cleaned.strip()
+
+    def _display_path(self, path: Path | str) -> str:
+        try:
+            candidate = Path(path).resolve()
+        except FileNotFoundError:
+            candidate = Path(path)
+        for root in self._library_roots:
+            try:
+                rel = candidate.relative_to(root)
+                return str(rel)
+            except ValueError:
+                continue
+        return str(path)
 
     def _persist_directory_release(
         self,
