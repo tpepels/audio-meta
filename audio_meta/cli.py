@@ -71,11 +71,6 @@ def main() -> None:
         help="Do not reuse previously chosen releases during this run",
     )
     parser.add_argument(
-        "--disable-release-cache",
-        action="store_true",
-        help="Do not reuse previously chosen releases during this run",
-    )
-    parser.add_argument(
         "--dry-run-output",
         type=Path,
         help="Record proposed tag changes to this file (JSON Lines) without editing files",
