@@ -37,3 +37,4 @@ organizer:
   target_root: /srv/music
   classical_mixed_strategy: performer_album
   cleanup_empty_dirs: false
+  max_filename_length: 255

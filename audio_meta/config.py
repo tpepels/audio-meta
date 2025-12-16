@@ -46,6 +46,7 @@ class OrganizerSettings(BaseModel):
     target_root: Optional[Path] = None
     classical_mixed_strategy: str = "performer_album"
     cleanup_empty_dirs: bool = False
+    max_filename_length: int = 255
 
     @field_validator("target_root", mode="before")
     @classmethod

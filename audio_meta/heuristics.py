@@ -33,9 +33,15 @@ def guess_metadata_from_path(path: Path) -> PathGuess:
     guess = PathGuess()
     filename = path.stem
     track_match = TRACK_PATTERN.match(filename)
+    embedded_match = None
+    if not track_match:
+        embedded_match = _embedded_track_match(filename)
     if track_match:
         guess.track_number = int(track_match.group("num"))
         guess.title = _clean(track_match.group("title"))
+    elif embedded_match:
+        guess.track_number = embedded_match[0]
+        guess.title = _clean(embedded_match[1])
     else:
         guess.title = _clean(filename)
 
@@ -62,3 +68,17 @@ def _clean(value: str | None) -> Optional[str]:
         return None
     cleaned = value.replace("_", " ").strip(" ._-")
     return cleaned or None
+
+
+def _embedded_track_match(filename: str) -> Optional[tuple[int, str]]:
+    parts = filename.split(" - ")
+    if len(parts) < 3:
+        return None
+    for idx, part in enumerate(parts[:-1]):
+        num_part = part.strip()
+        if num_part.isdigit():
+            num = int(num_part)
+            title = " - ".join(parts[idx + 1 :]).strip()
+            if title:
+                return num, title
+    return None

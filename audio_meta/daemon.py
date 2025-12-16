@@ -467,6 +467,16 @@ class AudioMetaDaemon:
         if forced_provider and forced_release_id and best_release_id == self._release_key(forced_provider, forced_release_id):
             forced_key = self._release_key(forced_provider, forced_release_id)
             ambiguous_candidates = [(forced_key, best_score)]
+        if len(ambiguous_candidates) > 1:
+            auto_pick = self._auto_pick_equivalent_release(
+                ambiguous_candidates,
+                release_examples,
+                discogs_details,
+            )
+            if auto_pick:
+                best_release_id = auto_pick
+                best_score = release_scores.get(auto_pick, best_score)
+                ambiguous_candidates = [(auto_pick, best_score)]
         coverage_threshold = 0.7
         coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
         if best_release_id and coverage < coverage_threshold:
@@ -728,6 +738,25 @@ class AudioMetaDaemon:
                     target_path=target_path,
                 )
             )
+        unmatched_entries = [p for p in pending_results if not p.matched]
+        if unmatched_entries and best_release_id:
+            if self.interactive:
+                if not self._prompt_on_unmatched_release(batch.directory, best_release_id, unmatched_entries):
+                    self._record_skip(batch.directory, "User skipped due to unmatched tracks")
+                    logger.warning(
+                        "Skipping %s because %d tracks did not match release %s",
+                        batch.directory,
+                        len(unmatched_entries),
+                        best_release_id,
+                    )
+                    return
+            else:
+                logger.warning(
+                    "Release %s left %d tracks unmatched in %s",
+                    best_release_id,
+                    len(unmatched_entries),
+                    self._display_path(batch.directory),
+                )
 
         if not planned:
             if not any(p.matched for p in pending_results):
@@ -898,6 +927,108 @@ class AudioMetaDaemon:
             return 0.0, coverage
         avg = total / count
         return min(0.08, avg * 0.08), coverage
+
+    def _auto_pick_equivalent_release(
+        self,
+        candidates: list[tuple[str, float]],
+        release_examples: dict[str, ReleaseExample],
+        discogs_details: dict[str, dict],
+    ) -> Optional[str]:
+        signatures: dict[str, tuple[int, tuple[tuple[str, Optional[int]], ...]]] = {}
+        for key, _ in candidates:
+            signature = self._canonical_release_signature(key, release_examples, discogs_details)
+            if signature is None:
+                return None
+            signatures[key] = signature
+        iterator = iter(signatures.values())
+        try:
+            first_signature = next(iterator)
+        except StopIteration:
+            return None
+        if not all(sig == first_signature for sig in iterator):
+            return None
+        priority = {"musicbrainz": 0, "discogs": 1}
+        best_key = min(
+            signatures.keys(),
+            key=lambda key: (priority.get(self._split_release_key(key)[0], 99), key),
+        )
+        return best_key
+
+    def _canonical_release_signature(
+        self,
+        key: str,
+        release_examples: dict[str, ReleaseExample],
+        discogs_details: dict[str, dict],
+    ) -> Optional[tuple[int, tuple[tuple[str, Optional[int]], ...]]]:
+        entries = self._release_track_entries(key, release_examples, discogs_details)
+        if not entries:
+            return None
+        normalized = []
+        for title, duration in entries:
+            if not title:
+                return None
+            normalized.append((title, duration))
+        return len(normalized), tuple(normalized)
+
+    def _release_track_entries(
+        self,
+        key: str,
+        release_examples: dict[str, ReleaseExample],
+        discogs_details: dict[str, dict],
+    ) -> Optional[list[tuple[str, Optional[int]]]]:
+        provider, release_id = self._split_release_key(key)
+        if provider == "musicbrainz":
+            release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+            if not release_data:
+                release_data = self.musicbrainz._fetch_release_tracks(release_id)
+                if release_data:
+                    self.musicbrainz.release_tracker.releases[release_id] = release_data
+            if not release_data or not release_data.tracks:
+                return None
+            entries: list[tuple[str, Optional[int]]] = []
+            for track in release_data.tracks:
+                if not track.title:
+                    return None
+                entries.append((self._normalize_match_text(track.title), track.duration_seconds))
+            return entries
+        if provider == "discogs":
+            details = discogs_details.get(key)
+            if not details and self.discogs:
+                try:
+                    details = self.discogs.get_release(int(release_id))
+                except (ValueError, TypeError):
+                    details = None
+                if details:
+                    discogs_details[key] = details
+            if not details:
+                return None
+            tracklist = details.get("tracklist") or []
+            entries = []
+            for track in tracklist:
+                if track.get("type_", "track") not in (None, "", "track"):
+                    continue
+                title = track.get("title")
+                if not title:
+                    return None
+                entries.append((self._normalize_match_text(title), self._parse_discogs_duration(track.get("duration"))))
+            return entries or None
+        return None
+
+    @staticmethod
+    def _parse_discogs_duration(value: Optional[str]) -> Optional[int]:
+        if not value or ":" not in value:
+            return None
+        parts = value.split(":", 1)
+        try:
+            minutes = int(parts[0])
+            seconds_str = parts[1]
+            if seconds_str.isdigit():
+                seconds = int(seconds_str)
+            else:
+                seconds = int(float(seconds_str))
+            return minutes * 60 + seconds
+        except (ValueError, TypeError):
+            return None
 
     def _match_pending_to_release(self, meta: TrackMetadata, release: "ReleaseData") -> Optional[float]:
         title = meta.title or guess_metadata_from_path(meta.path).title
@@ -1383,6 +1514,30 @@ class AudioMetaDaemon:
         track_count = len(release.get("tracklist") or []) or None
         _, disc_total = self._discogs_format_details({}, release)
         return track_count, disc_total
+
+    def _prompt_on_unmatched_release(
+        self,
+        directory: Path,
+        release_key: str,
+        unmatched: list[PendingResult],
+    ) -> bool:
+        provider, release_id = self._split_release_key(release_key)
+        display_name = self._display_path(directory)
+        sample_titles = []
+        for pending in unmatched[:5]:
+            title = pending.meta.title or pending.meta.path.name
+            sample_titles.append(f"- {title}")
+        print(
+            f"\n{ANSI_YELLOW if self._use_color else ''}Only {len(unmatched)} file(s) in {display_name} "
+            f"failed to match release {provider}:{release_id}.{ANSI_RESET if self._use_color else ''}"
+        )
+        if sample_titles:
+            print("Unmatched tracks:")
+            for entry in sample_titles:
+                print(f"  {entry}")
+        print("Proceed with the matched tracks? [y/N] ", end="")
+        choice = input().strip().lower()
+        return choice in {"y", "yes"}
 
     @staticmethod
     def _disc_label(disc_count: Optional[int]) -> Optional[str]:

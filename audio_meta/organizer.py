@@ -37,7 +37,7 @@ class Organizer:
         if not target_dir:
             return None
         target_filename = self._build_filename(meta)
-        target = target_dir / target_filename
+        target = self._truncate_target(target_dir / target_filename)
         if target == meta.path:
             return None
         return target
@@ -100,6 +100,24 @@ class Organizer:
         if trackno:
             return f"{trackno:02d} - {base_title}{meta.path.suffix}"
         return f"{base_title}{meta.path.suffix}"
+
+    def _truncate_target(self, target: Path) -> Path:
+        max_length = self.settings.max_filename_length or 255
+        name = target.name
+        if len(name.encode("utf-8")) <= max_length:
+            return target
+        stem = target.stem
+        suffix = target.suffix
+        ellipsis = "…"
+        allowed = max_length - len(suffix.encode("utf-8"))
+        if allowed <= len(ellipsis.encode("utf-8")):
+            truncated = ellipsis + suffix
+            return target.with_name(truncated)
+        encoded = stem.encode("utf-8")
+        truncated_bytes = encoded[: allowed - len(ellipsis.encode("utf-8"))]
+        truncated_stem = truncated_bytes.decode("utf-8", errors="ignore")
+        truncated = f"{truncated_stem}{ellipsis}{suffix}"
+        return target.with_name(truncated)
 
     def _build_directory(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if is_classical:
