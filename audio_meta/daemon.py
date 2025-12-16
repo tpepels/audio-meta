@@ -207,7 +207,7 @@ class AudioMetaDaemon:
             if result and meta.musicbrainz_release_id:
                 release_id = meta.musicbrainz_release_id
                 release_scores[release_id] = max(release_scores.get(release_id, 0.0), result.score)
-                release_data = self.release_tracker.releases.get(release_id)
+                release_data = self.musicbrainz.release_tracker.releases.get(release_id)
                 release_examples[release_id] = (
                     release_data.album_title if release_data and release_data.album_title else meta.album or "",
                     release_data.album_artist if release_data and release_data.album_artist else meta.album_artist or meta.artist or "",
