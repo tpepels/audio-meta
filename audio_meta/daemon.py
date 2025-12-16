@@ -449,9 +449,11 @@ class AudioMetaDaemon:
             if not matched:
                 logger.warning("No metadata match for %s; leaving file untouched", meta.path)
                 continue
-            if best_release_id and meta.musicbrainz_release_id != best_release_id:
-                meta.album = album_name or meta.album
-                meta.album_artist = album_artist or meta.album_artist
+            if best_release_id:
+                if album_name:
+                    meta.album = album_name
+                if album_artist:
+                    meta.album_artist = album_artist
                 meta.musicbrainz_release_id = best_release_id
             is_classical = self.heuristics.adapt_metadata(meta)
             tag_changes = self.tag_writer.diff(meta)

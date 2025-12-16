@@ -61,6 +61,11 @@ def main() -> None:
         help="Move files back to their original locations using recorded move history, then exit",
     )
     parser.add_argument(
+        "--reset-release-cache",
+        action="store_true",
+        help="Clear stored directory release choices (does not touch provider caches)",
+    )
+    parser.add_argument(
         "--dry-run-output",
         type=Path,
         help="Record proposed tag changes to this file (JSON Lines) without editing files",
@@ -94,6 +99,13 @@ def main() -> None:
     logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     config_path = find_config(args.config)
     settings = Settings.load(config_path)
+    if args.reset_release_cache:
+        cache = MetadataCache(settings.daemon.cache_path)
+        cache.clear_directory_releases()
+        cache.close()
+        print("Cleared stored release selections.")
+        if args.command is None:
+            return
     if args.rollback_moves:
         rollback_moves(settings)
         return
