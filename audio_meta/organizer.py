@@ -130,6 +130,8 @@ class Organizer:
         composer = self._safe(meta.composer, UNKNOWN_ARTIST)
         performer = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
+        if self.settings.classical_mixed_strategy != "performer_album" and composer == performer:
+            return self.target_root / composer / album
         if composer:
             release_key = self._release_key(meta)
             composers = self.release_composers[release_key]
