@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import sys
 import unicodedata
 from difflib import SequenceMatcher
@@ -122,6 +123,7 @@ class AudioMetaDaemon:
         dry_run_output: Optional[Path] = None,
         interactive: bool = False,
         release_cache_enabled: bool = True,
+        defer_prompts: bool = False,
     ) -> None:
         self.settings = settings
         self.cache = MetadataCache(settings.daemon.cache_path)
@@ -141,6 +143,7 @@ class AudioMetaDaemon:
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
         self.interactive = interactive
         self.release_cache_enabled = release_cache_enabled
+        self.defer_prompts = bool(defer_prompts and interactive)
         self._use_color = sys.stdout.isatty()
         self.skip_reasons: dict[Path, str] = {}
         self._skip_lock = Lock()
@@ -149,6 +152,11 @@ class AudioMetaDaemon:
         if self.dry_run_recorder:
             logger.debug("Dry-run mode enabled; writing preview to %s", dry_run_output)
         self._release_sep = ":"
+        self._defer_lock = Lock()
+        self._deferred_directories: list[Path] = []
+        self._deferred_set: set[Path] = set()
+        self._processing_deferred = False
+        self.archive_root = settings.organizer.archive_root
 
     async def run_scan(self) -> None:
         logger.debug("Starting one-off scan")
@@ -157,6 +165,8 @@ class AudioMetaDaemon:
         workers = self._start_workers()
         await self.queue.join()
         await self._stop_workers(workers)
+        if self.defer_prompts:
+            self._process_deferred_directories()
 
     async def run_daemon(self) -> None:
         logger.debug("Starting daemon")
@@ -197,13 +207,16 @@ class AudioMetaDaemon:
         while True:
             batch = await self.queue.get()
             try:
-                await asyncio.get_event_loop().run_in_executor(None, self._process_directory, batch)
+                if self.cache.is_directory_ignored(batch.directory):
+                    logger.info("Skipping ignored directory %s", self._display_path(batch.directory))
+                else:
+                    await asyncio.get_event_loop().run_in_executor(None, self._process_directory, batch)
             except Exception:  # pragma: no cover - logged and ignored
                 logger.exception("Worker %s failed to process %s", worker_id, batch.directory)
             finally:
                 self.queue.task_done()
 
-    def _process_directory(self, batch: DirectoryBatch) -> None:
+    def _process_directory(self, batch: DirectoryBatch, force_prompt: bool = False) -> None:
         prepared = self._prepare_album_batch(batch)
         if not prepared:
             return
@@ -480,6 +493,9 @@ class AudioMetaDaemon:
         coverage_threshold = 0.7
         coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
         if best_release_id and coverage < coverage_threshold:
+            if self.defer_prompts and not force_prompt and not self._processing_deferred:
+                self._schedule_deferred_directory(batch.directory, "low_coverage")
+                return
             if self.interactive:
                 logger.warning(
                     "Release %s matches only %.0f%% of tracks in %s; confirmation required",
@@ -521,6 +537,9 @@ class AudioMetaDaemon:
                 self._record_skip(batch.directory, "Low coverage release match")
                 return
         if best_release_id and len(ambiguous_candidates) > 1:
+            if self.defer_prompts and not force_prompt and not self._processing_deferred:
+                self._schedule_deferred_directory(batch.directory, "ambiguous_release")
+                return
             if self.interactive:
                 sample_meta = pending_results[0].meta if pending_results else None
                 if sample_meta and dir_track_count:
@@ -740,6 +759,9 @@ class AudioMetaDaemon:
             )
         unmatched_entries = [p for p in pending_results if not p.matched]
         if unmatched_entries and best_release_id:
+            if self.defer_prompts and not force_prompt and not self._processing_deferred:
+                self._schedule_deferred_directory(batch.directory, "unmatched_tracks")
+                return
             if self.interactive:
                 if not self._prompt_on_unmatched_release(batch.directory, best_release_id, unmatched_entries):
                     self._record_skip(batch.directory, "User skipped due to unmatched tracks")
@@ -765,6 +787,36 @@ class AudioMetaDaemon:
             return
         for plan in planned:
             self._apply_plan(plan)
+
+    def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
+        if not self.defer_prompts:
+            return
+        with self._defer_lock:
+            if directory in self._deferred_set:
+                return
+            self._deferred_set.add(directory)
+            self._deferred_directories.append(directory)
+        logger.info("Deferring %s (%s); will request input later", self._display_path(directory), reason)
+
+    def _process_deferred_directories(self) -> None:
+        with self._defer_lock:
+            pending = list(self._deferred_directories)
+            self._deferred_directories.clear()
+            self._deferred_set.clear()
+        if not pending:
+            return
+        suffix = "ies" if len(pending) != 1 else "y"
+        logger.info("Processing %d deferred directory%s...", len(pending), suffix)
+        self._processing_deferred = True
+        try:
+            for directory in pending:
+                batch = self.scanner.collect_directory(directory)
+                if not batch:
+                    logger.warning("Deferred directory %s no longer exists; skipping", self._display_path(directory))
+                    continue
+                self._process_directory(batch, force_prompt=True)
+        finally:
+            self._processing_deferred = False
 
     def _apply_plan(self, plan: PlannedUpdate) -> None:
         meta = plan.meta
@@ -1204,10 +1256,26 @@ class AudioMetaDaemon:
         for option in options:
             print(f"  {option['idx']}. {option['label']}")
         print("  0. Skip this directory")
+        print("  d. Delete this directory")
+        print("  a. Archive this directory")
+        print("  i. Ignore this directory")
         print("  mb:<release-id> or dg:<release-id> to enter an ID manually")
         while True:
             choice = input("Select release (0=skip): ").strip()
             if choice.lower() in {"0", "s", "skip"}:
+                return None
+            if choice.lower() in {"d", "del", "delete"}:
+                if self._delete_directory(directory):
+                    self._record_skip(directory, "Directory deleted per user request")
+                return None
+            if choice.lower() in {"a", "archive"}:
+                if not self._archive_directory(directory):
+                    continue
+                self.cache.ignore_directory(directory, "archived")
+                return None
+            if choice.lower() in {"i", "ignore"}:
+                self.cache.ignore_directory(directory, "user request")
+                logger.info("Ignoring %s per user request", self._display_path(directory))
                 return None
             manual = self._parse_manual_release_choice(choice)
             if manual:
@@ -1538,6 +1606,43 @@ class AudioMetaDaemon:
         print("Proceed with the matched tracks? [y/N] ", end="")
         choice = input().strip().lower()
         return choice in {"y", "yes"}
+
+    def _delete_directory(self, directory: Path) -> bool:
+        try:
+            shutil.rmtree(directory)
+            logger.info("Deleted directory %s", directory)
+            return True
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to delete %s: %s", directory, exc)
+            return False
+
+    def _archive_directory(self, directory: Path) -> bool:
+        if not self.archive_root:
+            print("Archive root not configured; set organizer.archive_root in config.")
+            return False
+        archive_root = self.archive_root
+        archive_root.mkdir(parents=True, exist_ok=True)
+        relative = None
+        for root in self._library_roots:
+            try:
+                relative = directory.relative_to(root)
+                break
+            except ValueError:
+                continue
+        target = archive_root / (relative or directory.name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        candidate = target
+        counter = 1
+        while candidate.exists():
+            candidate = target.parent / f"{target.name}-{counter:02d}"
+            counter += 1
+        try:
+            shutil.move(str(directory), str(candidate))
+            logger.info("Archived %s -> %s", directory, candidate)
+            return True
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to archive %s: %s", directory, exc)
+            return False
 
     @staticmethod
     def _disc_label(disc_count: Optional[int]) -> Optional[str]:

@@ -34,6 +34,7 @@ class ProviderSettings(BaseModel):
 class DaemonSettings(BaseModel):
     worker_concurrency: int = 4
     cache_path: Path = Path("./cache/cache.sqlite3")
+    defer_prompts: bool = False
 
     @field_validator("cache_path", mode="before")
     @classmethod
@@ -47,10 +48,18 @@ class OrganizerSettings(BaseModel):
     classical_mixed_strategy: str = "performer_album"
     cleanup_empty_dirs: bool = False
     max_filename_length: int = 255
+    archive_root: Optional[Path] = None
 
     @field_validator("target_root", mode="before")
     @classmethod
     def _expand_target(cls, value: Optional[str | Path]) -> Optional[Path]:
+        if value is None:
+            return None
+        return Path(value).expanduser().resolve()
+
+    @field_validator("archive_root", mode="before")
+    @classmethod
+    def _expand_archive(cls, value: Optional[str | Path]) -> Optional[Path]:
         if value is None:
             return None
         return Path(value).expanduser().resolve()

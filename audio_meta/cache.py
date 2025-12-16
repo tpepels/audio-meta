@@ -59,6 +59,15 @@ class MetadataCache:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ignored_directories (
+                directory_path TEXT PRIMARY KEY,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -193,6 +202,35 @@ class MetadataCache:
                 (str(directory),),
             )
             self._conn.commit()
+
+    def ignore_directory(self, directory: Path | str, reason: str = "") -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO ignored_directories(directory_path, reason, created_at)
+                VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(directory_path) DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at
+                """,
+                (str(directory), reason),
+            )
+            self._conn.commit()
+
+    def unignore_directory(self, directory: Path | str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM ignored_directories WHERE directory_path = ?",
+                (str(directory),),
+            )
+            self._conn.commit()
+
+    def is_directory_ignored(self, directory: Path | str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM ignored_directories WHERE directory_path = ?",
+                (str(directory),),
+            )
+            row = cursor.fetchone()
+        return bool(row)
 
     def _get(self, namespace: str, key: str) -> Optional[dict]:
         with self._lock:

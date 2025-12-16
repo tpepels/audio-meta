@@ -99,6 +99,11 @@ def main() -> None:
         help="Do not reuse previously chosen releases during this run",
     )
     parser.add_argument(
+        "--defer-prompts",
+        action="store_true",
+        help="Process manual release selections after scanning completes",
+    )
+    parser.add_argument(
         "--dry-run-output",
         type=Path,
         help="Record proposed tag changes to this file (JSON Lines) without editing files",
@@ -168,6 +173,7 @@ def main() -> None:
             dry_run_output=args.dry_run_output,
             interactive=(args.command == "scan"),
             release_cache_enabled=not args.disable_release_cache,
+            defer_prompts=args.defer_prompts or settings.daemon.defer_prompts,
         )
 
     try:
