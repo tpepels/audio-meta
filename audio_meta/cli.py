@@ -210,10 +210,9 @@ def rollback_moves(settings: Settings) -> None:
     for source_str, target_str in moves:
         source = Path(source_str)
         target = Path(target_str)
-        try:
-            target_exists = target.exists()
-        except OSError as exc:
-            logging.warning("Cannot restore %s -> %s: %s", target, source, exc)
+        target_exists = _path_exists(target)
+        if target_exists is None:
+            logging.warning("Cannot restore %s -> %s: parent missing", target, source)
             cache.delete_move(source)
             failed += 1
             continue
@@ -225,7 +224,7 @@ def rollback_moves(settings: Settings) -> None:
         source.parent.mkdir(parents=True, exist_ok=True)
         try:
             try:
-                target.rename(source)
+                _safe_rename(target, source)
             except OSError as exc:
                 if exc.errno != errno.EXDEV:
                     raise
@@ -285,6 +284,45 @@ def _directory_has_audio_files(path: Path, extensions: set[str]) -> bool:
             if Path(name).suffix.lower() in extensions:
                 return True
     return False
+
+
+def _path_exists(path: Path) -> Optional[bool]:
+    try:
+        path.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        if exc.errno != errno.ENAMETOOLONG:
+            raise
+        parent = path.parent
+        try:
+            with os.scandir(parent) as it:
+                for entry in it:
+                    if entry.name == path.name:
+                        return True
+        except FileNotFoundError:
+            return None
+        return False
+
+
+def _safe_rename(src: Path, dst: Path) -> None:
+    try:
+        src.rename(dst)
+        return
+    except OSError as exc:
+        if exc.errno != errno.ENAMETOOLONG:
+            raise
+    src_dir_fd = os.open(src.parent, os.O_RDONLY)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst_dir_fd = os.open(dst.parent, os.O_RDONLY)
+        try:
+            os.rename(src.name, dst.name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        finally:
+            os.close(dst_dir_fd)
+    finally:
+        os.close(src_dir_fd)
 
 
 def _remove_tree(path: Path) -> Optional[int]:
