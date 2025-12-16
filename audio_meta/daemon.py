@@ -1867,14 +1867,22 @@ class AudioMetaDaemon:
             before_album = pending_results[0].meta.album
             before_artist = pending_results[0].meta.album_artist or pending_results[0].meta.artist
         display = self._display_path(directory)
-        print(
-            f"\nApplying {provider.upper()} release {release_id} to {display}: "
-            f"{album or 'unknown album'} – {artist or 'unknown artist'} "
-            f"(tracks={track_count or '?'} discs={disc_count or '?'})"
+        logger.info(
+            "Applying %s release %s to %s: %s – %s (tracks=%s discs=%s)",
+            provider.upper(),
+            release_id,
+            display,
+            album or "unknown album",
+            artist or "unknown artist",
+            track_count or "?",
+            disc_count or "?",
         )
         if before_album or before_artist:
-            print(
-                f"  Previous tags: album='{before_album or 'unknown'}', artist='{before_artist or 'unknown'}'"
+            logger.debug(
+                "Previous tags for %s: album='%s', artist='%s'",
+                display,
+                before_album or "unknown",
+                before_artist or "unknown",
             )
 
     def _parse_manual_release_choice(self, raw: str) -> Optional[tuple[str, str]]:

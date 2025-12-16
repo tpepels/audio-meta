@@ -1,108 +1,117 @@
 # audio-meta
 
-Audio metadata correction daemon for Linux libraries. The tool walks a directory tree, fingerprints audio files, attempts to fetch canonical metadata from MusicBrainz, rewrites ID3/FLAC/Vorbis tags, and applies additional heuristics for classical works. It can run as a one-off scanner or as a daemon that keeps a library tidy while new tracks arrive.
+`audio-meta` is a command-line tool that keeps large audio libraries tidy. It fingerprints every track, fetches canonical metadata from MusicBrainz (with Discogs fallbacks), rewrites the tags, and—if you want—moves the files into a Plex-friendly layout such as `/Artist/Album` or `/Composer/Performer/Album`. The default workflow is designed for unattended operation: ambiguous releases are deferred until the scan finishes, and an audit pass can re-check the library using the tags already on disk.
 
-## Features
+## Highlights
 
-- Recursive library scanning with caching to avoid repeatedly processing the same file.
-- Uses [Chromaprint](https://acoustid.org/chromaprint) fingerprints via `pyacoustid` to match files against MusicBrainz releases, with Discogs fallbacks for missing metadata.
-- Normalisation pipeline that focuses on canonical artist, album artist, composer, performers, and work/movement metadata for classical music.
-- Watchdog-powered daemon mode that sits in the background and processes new or modified files immediately.
-- YAML configuration with per-directory overrides and rewrite rules for power users.
-- Filename heuristics plus release-level memory so that once a single track in an album matches MusicBrainz, the remaining tracks inherit consistent metadata even without fingerprints.
-- Optional organizer that keeps your library laid out as `/Artist/Album` (or `/Composer/Performer/Album` for classical works) and integrates with dry-run previews.
+- **Accurate matching** – Chromaprint fingerprints + release-level caching make repeat scans fast while still catching new files.
+- **Tag-aware heuristics** – Existing ID3/FLAC/M4A tags are taken into account to avoid misclassification and to bias scoring toward the right release.
+- **Organizer** – Optional mover keeps your library structured for Plex, automatically cleaning empty directories afterwards.
+- **Audit & repair** – Reads the tags already on disk to detect (and optionally fix) files that live in the wrong artist/album folder.
+- **Deferred prompts** – When a manual decision is needed, the question is queued and presented after the scan completes (the queue is persisted so you can answer later).
+- **Daemon mode** – Integrates with `systemd` via the provided unit file.
 
 ## Requirements
 
-- Debian/Ubuntu host, Python 3.10+, `python3-venv`, `libchromaprint-tools`, and `ffmpeg`/`libav` (for codecs unsupported by your installed decoders).
-- API credentials for [AcoustID](https://acoustid.org/api-key) and optionally for Discogs if you extend the provider list.
+- Python 3.10 or newer (tested on Debian/Ubuntu).
+- `python3-venv`, `libchromaprint-tools`, `ffmpeg`/`libavcodec` for fingerprinting and decoding.
+- API credentials:
+  - [AcoustID API key](https://acoustid.org/api-key) (mandatory).
+  - [Discogs token](https://www.discogs.com/settings/developers) (optional but recommended for obscure releases).
 
-## Quick start
+## Installation
 
 ```bash
+git clone https://github.com/your-user/audio-meta.git
+cd audio-meta
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
 cp config.sample.yaml config.yaml
-audio-meta scan --config config.yaml
 ```
 
-### Dry run
-
-Preview planned tag changes without modifying files by writing them to a JSON Lines file:
-
-```bash
-audio-meta scan --config config.yaml --dry-run-output /tmp/audio-meta-preview.jsonl
-```
-
-Each line contains the resolved metadata, tag differences (`tag_changes`), and any planned relocation (`relocate_from`/`relocate_to`) so you can inspect the exact changes before running the daemon for real.
-
-### Organizer
-
-Enable automatic folder layout by toggling the organizer in `config.yaml`:
+Edit `config.yaml` and add your library paths plus API keys:
 
 ```yaml
+library:
+  roots:
+    - /srv/music
+providers:
+  acoustid_api_key: "YOUR-ACOUSTID-KEY"
+  musicbrainz_useragent: "audio-meta/0.1 (you@example.com)"
+  discogs_token: "YOUR-DISCOGS-TOKEN"
 organizer:
   enabled: true
   target_root: /srv/music
-  classical_mixed_strategy: performer_album
   cleanup_empty_dirs: true
 ```
 
-Non-classical releases land in `/Artist/Album`. Classical albums default to `/Composer/Performer/Album`, but when multiple composers appear on the same release the strategy falls back to `/Performer/Album`. Dry-run mode previews tag changes and planned moves before touching the filesystem.
+## Everyday workflow
 
-### Audit mode
+1. **Run a full pass**  
+   ```
+   audio-meta run --config config.yaml
+   ```
+   This command performs a scan (tagging + organizer moves) and then runs the audit with `--fix`, which relocates any straggler files whose tags disagree with their directory.
 
-If your library already contains folders that were manually edited (or were affected by a bad run in the past) you can ask the CLI to report suspicious directories without touching any files:
+2. **Answer deferred prompts**  
+   During the scan, any ambiguous releases are added to a queue. After the scan, you will automatically be prompted for each outstanding directory. Prompts persist in the cache, so if you quit early you will still be asked the next time you run `audio-meta run`.
 
-```bash
-audio-meta audit --config config.yaml
-```
+3. **Review the summary**  
+   Warnings (including files that could not be matched or moved) are printed at the end and written to `audio-meta-warnings.log` in the working directory.
 
-The report lists each folder that appears to mix multiple album/artist combinations and/or contains duplicate track titles. It also shows example filenames so you can fix the directory manually before enabling the organizer again.
+### Other commands
 
-### Cleanup mode
+| Command | Description |
+| ------- | ----------- |
+| `audio-meta scan --config config.yaml` | Run only the scanner (no audit). Use when you want to inspect before fixing. |
+| `audio-meta audit --config config.yaml` | Report misplaced files based on tags; add `--fix` to auto-move them. |
+| `audio-meta cleanup --config config.yaml [--dry-run]` | Remove directories that contain no audio files (e.g., leftover artwork). |
+| `audio-meta rollback-moves --config config.yaml` | Undo the most recent organizer moves using the move history stored in the cache. |
+| `audio-meta daemon --config config.yaml` | Start the filesystem watcher to process new files continuously. |
 
-After you’ve confirmed everything is tagged correctly, you can delete any leftover directories that no longer contain audio files (sleevenotes, artwork, etc.) with:
+Optional flags that apply to all commands:
 
-```bash
-audio-meta cleanup --config config.yaml
-```
+- `--log-level DEBUG` for verbose tracing.
+- `--disable-release-cache` if you need to force a fresh lookup (normally not required).
+- `--dry-run-output path.jsonl` to record all planned tag changes and moves without touching files.
 
-Pass `--dry-run` to preview which directories would be removed before deleting anything. If you want this to happen automatically after each move, set `organizer.cleanup_empty_dirs: true` in the configuration.
+## Deferred prompts & manual selections
 
-## Daemon installation
+- When the scanner cannot confidently choose a release (or when coverage is low), the directory is added to a deferred queue along with the reason.
+- After the scan, the tool replays that queue and shows a menu that lists MusicBrainz / Discogs candidates, including track counts, formats, and scores.
+- Input is numeric (e.g., `1`) for the best candidate, or `mb:<release-id>` / `dg:<release-id>` if you have a specific release in mind.
+- Additional options:
+  - `0` – skip this directory (it will be listed in the warning summary).
+  - `d` – delete the directory.
+  - `a` – archive the directory (requires `organizer.archive_root`).
+  - `i` – ignore the directory in future scans.
+
+## Running as a daemon
 
 1. Copy `systemd/audio-meta.service` to `/etc/systemd/system/audio-meta.service`.
-2. Adjust paths inside the service file so they point to your virtual environment and configuration file.
-3. Reload systemd and enable the service:
+2. Edit the service file so it points to your virtual environment and configuration file.
+3. Reload systemd and start the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now audio-meta.service
+   ```
+4. View logs with `journalctl -u audio-meta.service`.
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now audio-meta.service
-```
+The daemon mode is useful when new files arrive regularly; it still uses deferred prompts for any ambivalent releases.
 
-The daemon writes logs to journald by default.
+## Troubleshooting
 
-## Architecture
+- **“Fingerprint failed – fpcalc not found”**: install `libchromaprint-tools`.
+- **“Audio could not be decoded”**: ensure `ffmpeg`/`libavcodec` is installed and the format is supported.
+- **Repeated prompts for the same directory**: clear the release cache (`audio-meta --reset-release-cache scan …`) if you recently renamed folders or moved files outside of the tool.
+- **Organizer moves files you already tagged manually**: run `audio-meta audit --fix` once so the audit realigns directories with the tags, then future scans will skip the untouched directories (thanks to directory hashing).
 
-- `audio_meta.config.Settings` loads YAML configuration, validates directories, and exposes API keys.
-- `audio_meta.scanner.LibraryScanner` walks the filesystem and enqueues work for the processor.
-- `audio_meta.providers.musicbrainz.MusicBrainzClient` coordinates fingerprint lookups, metadata searches, filename guesses, and release-level inference with confidence scoring.
-- `audio_meta.providers.discogs.DiscogsClient` supplements or replaces MusicBrainz data when necessary, ensuring album/artist metadata is filled even for obscure releases.
-- `audio_meta.heuristics.PathGuess` parses folder/file names into probable artist/album/track information when embedded tags are missing.
-- `audio_meta.providers.musicbrainz.ReleaseTracker` caches release tracklists so sibling files can reuse the same MusicBrainz release metadata.
-- `audio_meta.organizer.Organizer` determines target directories (artist/album vs composer/performer/album) and moves files accordingly once tagging succeeds.
-- `audio_meta.tagging.TagWriter` coordinates reading/writing metadata using `mutagen`.
-- `audio_meta.classical.ClassicalHeuristics` provides a simple scoring mechanism that distinguishes classical repertoire and rewrites metadata accordingly.
-- `audio_meta.daemon.AudioMetaDaemon` runs the orchestrator and integrates with the CLI entry point.
+## Contributing
 
-## Next steps
+Issues and pull requests are welcome. If you add new providers or heuristics, make sure you update the README and sample configuration so other users can benefit.
 
-The repository bootstraps a functional framework, but you will want to extend:
+## License
 
-- Persistent caching of processed file fingerprints (sqlite).
-- Discogs or streaming service providers for metadata gaps.
-- More advanced classical heuristics (machine-learning or MusicBrainz work tree lookups).
-- Comprehensive unit tests and CI automation.
+This project is licensed under the [MIT License](LICENSE).
