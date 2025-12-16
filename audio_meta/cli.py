@@ -315,6 +315,12 @@ def review_singletons(settings: Settings) -> None:
             if entry.target:
                 target_label = auditor.display_path(entry.target.parent)
                 print(f"    Suggested target: {target_label}/{entry.target.name}")
+            elif entry.release_home:
+                home_label = auditor.display_path(entry.release_home)
+                print(f"    Release home: {home_label}/ (already contains other tracks)")
+            elif entry.canonical_path:
+                canonical_label = auditor.display_path(entry.canonical_path.parent)
+                print(f"    Canonical path: {canonical_label}/{entry.canonical_path.name}")
             else:
                 print("    Suggested target: (already in place or unknown)")
             while True:
@@ -325,12 +331,16 @@ def review_singletons(settings: Settings) -> None:
                     print("Stopping singleton review.")
                     return
                 if choice == "m":
-                    if not entry.target:
+                    destination = entry.target
+                    if not destination and entry.release_home:
+                        destination = entry.release_home / entry.file_path.name
+                    if not destination:
                         print("No suggested destination; keeping file in place.")
                         break
-                    auditor.organizer.move(entry.meta, entry.target, dry_run=False)
+                    auditor.organizer.move(entry.meta, destination, dry_run=False)
                     auditor.organizer.cleanup_source_directory(entry.directory)
                     entry.file_path = entry.meta.path
+                    entry.directory = entry.meta.path.parent
                     print("Moved to", auditor.display_path(entry.meta.path.parent))
                     break
                 if choice == "d":

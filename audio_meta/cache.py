@@ -245,6 +245,15 @@ class MetadataCache:
             )
             self._conn.commit()
 
+    def find_directories_for_release(self, release_id: str) -> list[str]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT directory_path FROM directory_releases WHERE release_id = ?",
+                (release_id,),
+            )
+            rows = cursor.fetchall()
+        return [row[0] for row in rows]
+
     def get_directory_hash(self, directory: Path | str) -> Optional[str]:
         with self._lock:
             cursor = self._conn.execute(

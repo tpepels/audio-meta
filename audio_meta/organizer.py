@@ -38,14 +38,19 @@ class Organizer:
         self.cache = cache
         self._layout_cache: Dict[str, str] = {}
 
-    def plan_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
+    def canonical_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if not self.enabled:
             return None
         target_dir = self._build_directory(meta, is_classical)
         if not target_dir:
             return None
         target_filename = self._build_filename(meta)
-        target = self._truncate_target(target_dir / target_filename)
+        return self._truncate_target(target_dir / target_filename)
+
+    def plan_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
+        target = self.canonical_target(meta, is_classical)
+        if not target:
+            return None
         if target == meta.path:
             return None
         return target

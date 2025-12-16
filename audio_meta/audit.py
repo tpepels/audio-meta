@@ -25,6 +25,8 @@ class SingletonEntry:
     meta: TrackMetadata
     is_classical: bool
     target: Optional[Path]
+    canonical_path: Optional[Path]
+    release_home: Optional[Path]
 
 
 class LibraryAuditor:
@@ -199,7 +201,16 @@ class LibraryAuditor:
                 tags = self.tag_writer.read_existing_tags(meta) or {}
                 self._apply_tag_values(meta, tags)
                 classical = self.heuristics.evaluate(meta).is_classical
-                target = self.organizer.plan_target(meta, classical)
+                canonical = self.organizer.canonical_target(meta, classical)
+                target: Optional[Path] = None
+                release_home: Optional[Path] = None
+                if canonical and canonical != file_path:
+                    target = canonical
+                else:
+                    release_home = self._find_release_home(meta, directory)
+                    if release_home and release_home != directory:
+                        filename = canonical.name if canonical else file_path.name
+                        target = self.organizer._truncate_target(release_home / filename)
                 entries.append(
                     SingletonEntry(
                         directory=directory,
@@ -207,6 +218,34 @@ class LibraryAuditor:
                         meta=meta,
                         is_classical=classical,
                         target=target,
+                        canonical_path=canonical,
+                        release_home=release_home,
                     )
                 )
         return entries
+
+    def _find_release_home(self, meta: TrackMetadata, current_dir: Path) -> Optional[Path]:
+        if not self.cache or not meta.musicbrainz_release_id:
+            return None
+        directories = self.cache.find_directories_for_release(meta.musicbrainz_release_id)
+        best_dir: Optional[Path] = None
+        best_count = 0
+        for raw in directories:
+            candidate = Path(raw)
+            if candidate == current_dir:
+                continue
+            if not candidate.exists():
+                continue
+            count = self._count_audio_files(candidate)
+            if count > best_count:
+                best_dir = candidate
+                best_count = count
+        return best_dir
+
+    def _count_audio_files(self, directory: Path) -> int:
+        count = 0
+        for dirpath, _, filenames in os.walk(directory):
+            for name in filenames:
+                if Path(name).suffix.lower() in self.extensions:
+                    count += 1
+        return count
