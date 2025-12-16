@@ -48,6 +48,17 @@ class MetadataCache:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS directory_releases (
+                directory_path TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                score REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -130,6 +141,39 @@ class MetadataCache:
         with self._lock:
             self._conn.execute("DELETE FROM moves")
             self._conn.execute("UPDATE processed_files SET organized = 0")
+            self._conn.commit()
+
+    def get_directory_release(self, directory: Path) -> Optional[tuple[str, str, float]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT provider, release_id, score FROM directory_releases WHERE directory_path = ?",
+                (str(directory),),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        provider, release_id, score = row
+        return provider, release_id, float(score)
+
+    def set_directory_release(self, directory: Path, provider: str, release_id: str, score: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO directory_releases(directory_path, provider, release_id, score, updated_at)
+                VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(directory_path)
+                DO UPDATE SET provider=excluded.provider, release_id=excluded.release_id, score=excluded.score, updated_at=excluded.updated_at
+                """,
+                (str(directory), provider, release_id, float(score)),
+            )
+            self._conn.commit()
+
+    def delete_directory_release(self, directory: Path) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM directory_releases WHERE directory_path = ?",
+                (str(directory),),
+            )
             self._conn.commit()
 
     def _get(self, namespace: str, key: str) -> Optional[dict]:

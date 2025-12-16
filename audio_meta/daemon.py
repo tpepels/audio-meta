@@ -187,6 +187,29 @@ class AudioMetaDaemon:
         release_scores: dict[str, float] = {}
         release_examples: dict[str, ReleaseExample] = {}
         dir_track_count, dir_year = self._directory_context(batch.directory, batch.files)
+        cached_discogs_release_details = None
+        cached_release_entry = self.cache.get_directory_release(batch.directory)
+        if cached_release_entry:
+            provider, cached_release_id, cached_score = cached_release_entry
+            if provider == "musicbrainz":
+                self.musicbrainz.release_tracker.register(
+                    batch.directory,
+                    cached_release_id,
+                    self.musicbrainz._fetch_release_tracks,
+                )
+                self.musicbrainz.release_tracker.remember_release(batch.directory, cached_release_id, cached_score)
+                release_data = self.musicbrainz.release_tracker.releases.get(cached_release_id)
+                if release_data:
+                    release_examples[cached_release_id] = ReleaseExample(
+                        title=release_data.album_title or "",
+                        artist=release_data.album_artist or "",
+                        date=release_data.release_date,
+                        track_total=len(release_data.tracks) if release_data.tracks else None,
+                        disc_count=release_data.disc_count or None,
+                        formats=list(release_data.formats),
+                    )
+            elif provider == "discogs" and self.discogs:
+                cached_discogs_release_details = self.discogs.get_release(int(cached_release_id))
 
         for file_path in batch.files:
             meta = TrackMetadata(path=file_path)
@@ -238,6 +261,8 @@ class AudioMetaDaemon:
                     formats=list(release_data.formats) if release_data else [],
                 )
         discogs_release_details = None
+        if not release_scores and cached_discogs_release_details:
+            self._apply_discogs_release_details(pending_results, cached_discogs_release_details)
         if not release_scores and self.interactive and pending_results:
             sample_meta = pending_results[0].meta if pending_results else None
             selection = self._resolve_unmatched_directory(
@@ -261,6 +286,7 @@ class AudioMetaDaemon:
                     logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                     return
                 self._apply_discogs_release_details(pending_results, discogs_release_details)
+                self.cache.set_directory_release(batch.directory, "discogs", selection_id, 1.0)
             else:
                 applied = self._apply_musicbrainz_release_selection(batch.directory, selection_id, pending_results)
                 if not applied:
@@ -316,6 +342,7 @@ class AudioMetaDaemon:
                         self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
                         logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
                         return
+                    self.cache.set_directory_release(batch.directory, "discogs", selection_id, 1.0)
                     best_release_id = None
                 else:
                     best_release_id = selection_id
@@ -340,6 +367,7 @@ class AudioMetaDaemon:
             example = release_examples.get(best_release_id)
             album_name = example.title if example else ""
             album_artist = example.artist if example else ""
+            self.cache.set_directory_release(batch.directory, "musicbrainz", best_release_id, best_score)
         else:
             album_name = album_artist = ""
 
