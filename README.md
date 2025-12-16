@@ -51,6 +51,16 @@ organizer:
 
 Non-classical releases land in `/Artist/Album`. Classical albums default to `/Composer/Performer/Album`, but when multiple composers appear on the same release the strategy falls back to `/Performer/Album`. Dry-run mode previews tag changes and planned moves before touching the filesystem.
 
+### Audit mode
+
+If your library already contains folders that were manually edited (or were affected by a bad run in the past) you can ask the CLI to report suspicious directories without touching any files:
+
+```bash
+audio-meta audit --config config.yaml
+```
+
+The report lists each folder that appears to mix multiple album/artist combinations and/or contains duplicate track titles. It also shows example filenames so you can fix the directory manually before enabling the organizer again.
+
 ## Daemon installation
 
 1. Copy `systemd/audio-meta.service` to `/etc/systemd/system/audio-meta.service`.

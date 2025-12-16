@@ -198,10 +198,18 @@ def rollback_moves(settings: Settings) -> None:
 
 def audit_library(settings: Settings) -> None:
     scanner = LibraryScanner(settings.library)
-    suspects: list[tuple[Path, dict[tuple[str, str], dict[str, object]]]] = []
+    suspects: list[
+        tuple[
+            Path,
+            dict[tuple[str, str], dict[str, object]],
+            dict[str, dict[str, object]],
+            bool,
+        ]
+    ] = []
     library_roots = [root.resolve() for root in settings.library.roots]
     for batch in scanner.iter_directories():
         combos: dict[tuple[str, str], dict[str, object]] = {}
+        titles: dict[str, dict[str, object]] = {}
         for path in batch.files:
             tags = _read_basic_tags(path)
             guess = guess_metadata_from_path(path)
@@ -219,30 +227,55 @@ def audit_library(settings: Settings) -> None:
                 },
             )
             bucket["files"].append(path.name)
+            raw_title = tags.get("title") or guess.title or path.stem
+            norm_title = _normalize_text(raw_title)
+            if norm_title:
+                title_bucket = titles.setdefault(
+                    norm_title,
+                    {
+                        "title": raw_title or path.stem,
+                        "files": [],
+                    },
+                )
+                title_bucket["files"].append(path.name)
         if not combos:
             continue
         known_artists = {key[0] for key in combos if key[0] != "unknown"}
         known_albums = {key[1] for key in combos if key[1] != "unknown"}
-        if len(known_artists) <= 1 and len(known_albums) <= 1:
+        duplicate_titles = {key: info for key, info in titles.items() if len(info["files"]) > 1}
+        multi_combo = len(known_artists) > 1 or len(known_albums) > 1
+        if not multi_combo and not duplicate_titles:
             continue
-        suspects.append((batch.directory, combos))
+        suspects.append((batch.directory, combos, duplicate_titles, multi_combo))
     if not suspects:
-        print("No directories with mixed album or artist metadata detected.")
+        print("No directories with mixed album, artist, or duplicate track metadata detected.")
         return
     suspects.sort(key=lambda entry: len(entry[1]), reverse=True)
-    print(f"Found {len(suspects)} directory/directories with inconsistent metadata:\n")
-    for directory, combos in suspects:
+    print(f"Found {len(suspects)} directory/directories needing review:\n")
+    for directory, combos, duplicate_titles, multi_combo in suspects:
         rel = _display_relative(directory, library_roots)
-        print(f"- {rel} ({len(combos)} unique album/artist combinations)")
-        for (norm_artist, norm_album), info in sorted(combos.items()):
-            files: list[str] = info["files"]  # type: ignore[assignment]
-            sample = ", ".join(sorted(files)[:3])
-            extra = max(0, len(files) - 3)
-            if extra:
-                sample = f"{sample}, +{extra} more"
-            artist_label = info["artist"]  # type: ignore[index]
-            album_label = info["album"]  # type: ignore[index]
-            print(f"    • {artist_label} – {album_label} ({len(files)} tracks): {sample}")
+        print(f"- {rel}")
+        if multi_combo:
+            print(f"    Multiple album/artist combinations ({len(combos)}):")
+            for (norm_artist, norm_album), info in sorted(combos.items()):
+                files: list[str] = info["files"]  # type: ignore[assignment]
+                sample = ", ".join(sorted(files)[:3])
+                extra = max(0, len(files) - 3)
+                if extra:
+                    sample = f"{sample}, +{extra} more"
+                artist_label = info["artist"]  # type: ignore[index]
+                album_label = info["album"]  # type: ignore[index]
+                print(f"      • {artist_label} – {album_label} ({len(files)} tracks): {sample}")
+        if duplicate_titles:
+            print("    Duplicate track titles detected:")
+            for key, info in sorted(duplicate_titles.items()):
+                files: list[str] = info["files"]  # type: ignore[assignment]
+                sample = ", ".join(sorted(files)[:3])
+                extra = max(0, len(files) - 3)
+                if extra:
+                    sample = f"{sample}, +{extra} more"
+                title_label = info["title"]  # type: ignore[index]
+                print(f"      • {title_label} ({len(files)} copies): {sample}")
         print()
 
 
