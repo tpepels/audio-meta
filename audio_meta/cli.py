@@ -66,6 +66,16 @@ def main() -> None:
         help="Clear stored directory release choices (does not touch provider caches)",
     )
     parser.add_argument(
+        "--disable-release-cache",
+        action="store_true",
+        help="Do not reuse previously chosen releases during this run",
+    )
+    parser.add_argument(
+        "--disable-release-cache",
+        action="store_true",
+        help="Do not reuse previously chosen releases during this run",
+    )
+    parser.add_argument(
         "--dry-run-output",
         type=Path,
         help="Record proposed tag changes to this file (JSON Lines) without editing files",
@@ -114,7 +124,12 @@ def main() -> None:
         cache = MetadataCache(settings.daemon.cache_path)
         cache.clear_moves()
         cache.close()
-    daemon = AudioMetaDaemon(settings, dry_run_output=args.dry_run_output, interactive=(args.command == "scan"))
+    daemon = AudioMetaDaemon(
+        settings,
+        dry_run_output=args.dry_run_output,
+        interactive=(args.command == "scan"),
+        release_cache_enabled=not args.disable_release_cache,
+    )
 
     try:
         match args.command:
