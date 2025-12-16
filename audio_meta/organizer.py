@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import re
+import shutil
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Optional, Set
-import unicodedata
-import errno
-import shutil
 
 from .config import LibrarySettings, OrganizerSettings
 from .heuristics import guess_metadata_from_path
@@ -26,6 +27,8 @@ class Organizer:
         default_root = library_settings.roots[0] if library_settings.roots else Path.cwd()
         self.target_root = (settings.target_root or default_root).resolve()
         self.release_composers: Dict[str, Set[str]] = defaultdict(set)
+        self.library_roots = [root.resolve() for root in library_settings.roots]
+        self.audio_extensions = {ext.lower() for ext in library_settings.include_extensions}
 
     def plan_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if not self.enabled:
@@ -58,6 +61,31 @@ class Organizer:
             meta.path = target
         except OSError as exc:
             logger.warning("Failed to move %s -> %s: %s", meta.path, target, exc)
+
+    def cleanup_source_directory(self, directory: Path) -> None:
+        if not self.settings.cleanup_empty_dirs:
+            return
+        current = directory
+        while current:
+            try:
+                resolved = current.resolve()
+            except FileNotFoundError:
+                resolved = current
+            if self._is_library_root(resolved):
+                break
+            if not self._is_under_library(resolved):
+                break
+            if not resolved.exists():
+                current = resolved.parent
+                continue
+            if self._directory_has_audio(resolved):
+                break
+            if not self._remove_tree(resolved):
+                break
+            logger.info("Removed empty source directory %s", resolved)
+            current = resolved.parent
+            if not current or current == current.parent:
+                break
 
     def _build_filename(self, meta: TrackMetadata) -> str:
         title = meta.title
@@ -120,3 +148,43 @@ class Organizer:
             return guess.artist
         parts = [part.strip() for part in re.split(r"[;,]+", source) if part.strip()]
         return parts[0] if parts else source
+
+    def _is_under_library(self, path: Path) -> bool:
+        for root in self.library_roots:
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _is_library_root(self, path: Path) -> bool:
+        return any(path == root for root in self.library_roots)
+
+    def _directory_has_audio(self, directory: Path) -> bool:
+        for root, _, files in os.walk(directory):
+            for name in files:
+                ext = Path(name).suffix.lower()
+                if ext in self.audio_extensions:
+                    return True
+        return False
+
+    def _remove_tree(self, directory: Path) -> bool:
+        try:
+            for root, dirs, files in os.walk(directory, topdown=False):
+                root_path = Path(root)
+                for name in files:
+                    try:
+                        (root_path / name).unlink()
+                    except FileNotFoundError:
+                        continue
+                for name in dirs:
+                    try:
+                        (root_path / name).rmdir()
+                    except OSError:
+                        return False
+            directory.rmdir()
+            return True
+        except OSError as exc:
+            logger.warning("Failed to remove %s: %s", directory, exc)
+            return False

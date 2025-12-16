@@ -85,7 +85,45 @@ class ReleaseData:
                 if predicate(track):
                     self.claimed.add(track.recording_id)
                     return track, confidence
+        fuzzy = self._fuzzy_title_match(guess, duration)
+        if fuzzy:
+            track, confidence = fuzzy
+            self.claimed.add(track.recording_id)
+            return track, confidence
         return None
+
+    def _fuzzy_title_match(self, guess: PathGuess, duration: Optional[int]) -> Optional[Tuple[ReleaseTrack, float]]:
+        if not guess.title:
+            return None
+        normalized_guess = self._normalize_title(guess.title)
+        if not normalized_guess:
+            return None
+        best_track: Optional[ReleaseTrack] = None
+        best_score = 0.0
+        for track in self.tracks:
+            if track.recording_id in self.claimed or not track.title:
+                continue
+            normalized_track = self._normalize_title(track.title)
+            if not normalized_track:
+                continue
+            ratio = difflib.SequenceMatcher(None, normalized_guess, normalized_track).ratio()
+            if ratio <= best_score:
+                continue
+            if duration and track.duration_seconds:
+                if abs(track.duration_seconds - duration) > max(15, int(0.25 * track.duration_seconds)):
+                    continue
+            best_track = track
+            best_score = ratio
+        if best_track and best_score >= 0.55:
+            confidence = 0.45 + (best_score - 0.55) * 0.4
+            return best_track, min(0.85, confidence)
+        return None
+
+    @staticmethod
+    def _normalize_title(value: str) -> Optional[str]:
+        cleaned = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE).strip().lower()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned or None
 
 
 @dataclass(slots=True)

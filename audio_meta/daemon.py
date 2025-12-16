@@ -6,6 +6,7 @@ import logging
 import re
 import sys
 import unicodedata
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -267,6 +268,8 @@ class AudioMetaDaemon:
 
         for file_path in batch.files:
             meta = TrackMetadata(path=file_path)
+            if dir_track_count:
+                meta.extra["TRACK_TOTAL"] = str(dir_track_count)
             stat_before = None
             if not self.dry_run_recorder:
                 stat_before = self._safe_stat(file_path)
@@ -321,6 +324,8 @@ class AudioMetaDaemon:
             self._apply_discogs_release_details(pending_results, cached_discogs_release_details)
         if not release_scores and self.interactive and pending_results:
             sample_meta = pending_results[0].meta if pending_results else None
+            if sample_meta and dir_track_count:
+                sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
             selection = self._resolve_unmatched_directory(
                 batch.directory,
                 sample_meta,
@@ -410,6 +415,8 @@ class AudioMetaDaemon:
         if self.discogs and pending_results:
             sample_meta = pending_results[0].meta if pending_results else None
             if sample_meta:
+                if dir_track_count:
+                    sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
                 for cand in self._discogs_candidates(sample_meta):
                     release_id = str(cand.get("id"))
                     if not release_id:
@@ -433,7 +440,15 @@ class AudioMetaDaemon:
                     if details:
                         discogs_details[key] = details
 
-        release_scores = self._adjust_release_scores(release_scores, release_examples, dir_track_count, dir_year)
+        release_scores = self._adjust_release_scores(
+            release_scores,
+            release_examples,
+            dir_track_count,
+            dir_year,
+            pending_results,
+            batch.directory,
+            discogs_details,
+        )
         best_release_id = None
         best_score = 0.0
         for rid, score in release_scores.items():
@@ -455,6 +470,8 @@ class AudioMetaDaemon:
         if best_release_id and len(ambiguous_candidates) > 1:
             if self.interactive:
                 sample_meta = pending_results[0].meta if pending_results else None
+                if sample_meta and dir_track_count:
+                    sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
                 selection = self._resolve_release_interactively(
                     batch.directory,
                     ambiguous_candidates,
@@ -705,6 +722,7 @@ class AudioMetaDaemon:
             if target_path:
                 self.organizer.move(meta, target_path, dry_run=False)
                 self.cache.record_move(original_path, target_path)
+                self.organizer.cleanup_source_directory(original_path.parent)
         except ProcessingError as exc:
             logger.warning("Failed to update tags for %s: %s", meta.path, exc)
             return
@@ -730,6 +748,9 @@ class AudioMetaDaemon:
         release_examples: dict[str, ReleaseExample],
         dir_track_count: int,
         dir_year: Optional[int],
+        pending_results: list[PendingResult],
+        directory: Path,
+        discogs_details: dict[str, dict],
     ) -> dict[str, float]:
         adjusted: dict[str, float] = {}
         for key, base_score in scores.items():
@@ -738,12 +759,16 @@ class AudioMetaDaemon:
             release_track_total = example.track_total if example else None
             if dir_track_count and release_track_total:
                 ratio = min(dir_track_count, release_track_total) / max(dir_track_count, release_track_total)
-                if ratio >= 0.9:
-                    bonus += 0.04
-                elif ratio >= 0.75:
+                if ratio >= 0.95:
+                    bonus += 0.08
+                elif ratio >= 0.85:
+                    bonus += 0.05
+                elif ratio >= 0.7:
                     bonus += 0.02
-                elif ratio <= 0.5:
-                    bonus -= 0.03
+                elif ratio <= 0.55:
+                    bonus -= 0.07
+                elif ratio <= 0.4:
+                    bonus -= 0.12
             release_year = self._parse_year(example.date if example else None)
             if dir_year and release_year:
                 diff = abs(release_year - dir_year)
@@ -753,8 +778,137 @@ class AudioMetaDaemon:
                     bonus += 0.015
                 elif diff >= 3:
                     bonus -= 0.03
+            bonus += self._tag_overlap_bonus(example, pending_results, directory)
+            bonus += self._release_match_quality(
+                key,
+                pending_results,
+                discogs_details,
+            )
             adjusted[key] = base_score + bonus
         return adjusted
+
+    def _tag_overlap_bonus(
+        self,
+        example: Optional[ReleaseExample],
+        pending_results: list[PendingResult],
+        directory: Path,
+    ) -> float:
+        if not example:
+            return 0.0
+        bonus = 0.0
+        first_meta = pending_results[0].meta if pending_results else None
+        meta_artist = None
+        meta_album = None
+        if first_meta:
+            meta_artist = first_meta.album_artist or first_meta.artist
+            meta_album = first_meta.album
+        release_artist = example.artist or None
+        release_album = example.title or None
+        bonus += self._overlap_delta(self._token_overlap_ratio(meta_artist, release_artist))
+        bonus += self._overlap_delta(self._token_overlap_ratio(meta_album, release_album))
+        hint_artist, hint_album = self._path_based_hints(directory)
+        bonus += 0.5 * self._overlap_delta(self._token_overlap_ratio(hint_artist, release_artist))
+        bonus += 0.5 * self._overlap_delta(self._token_overlap_ratio(hint_album, release_album))
+        return max(-0.05, min(0.05, bonus))
+
+    @staticmethod
+    def _overlap_delta(ratio: Optional[float]) -> float:
+        if ratio is None:
+            return 0.0
+        if ratio >= 0.75:
+            return 0.02
+        if ratio >= 0.6:
+            return 0.01
+        if ratio <= 0.2:
+            return -0.02
+        return 0.0
+
+    def _release_match_quality(
+        self,
+        key: str,
+        pending_results: list[PendingResult],
+        discogs_details: dict[str, dict],
+    ) -> float:
+        provider, release_id = self._split_release_key(key)
+        if provider != "musicbrainz":
+            return 0.0
+        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+        if not release_data:
+            release_data = self.musicbrainz._fetch_release_tracks(release_id)
+            if release_data:
+                self.musicbrainz.release_tracker.releases[release_id] = release_data
+        if not release_data or not release_data.tracks:
+            return 0.0
+        total = 0.0
+        count = 0
+        for pending in pending_results:
+            track_score = self._match_pending_to_release(pending.meta, release_data)
+            if track_score is not None:
+                total += track_score
+                count += 1
+        if not count:
+            return 0.0
+        avg = total / count
+        return min(0.08, avg * 0.08)
+
+    def _match_pending_to_release(self, meta: TrackMetadata, release: "ReleaseData") -> Optional[float]:
+        title = meta.title or guess_metadata_from_path(meta.path).title
+        duration = meta.duration_seconds
+        if duration is None:
+            duration = self.musicbrainz._probe_duration(meta.path)
+            if duration:
+                meta.duration_seconds = duration
+        best = 0.0
+        for track in release.tracks:
+            combined = self._combine_similarity(
+                self._title_similarity(title, track.title),
+                self._duration_similarity(duration, track.duration_seconds),
+            )
+            if combined is not None and combined > best:
+                best = combined
+        if best <= 0.0:
+            return None
+        return best
+
+    def _title_similarity(self, a: Optional[str], b: Optional[str]) -> Optional[float]:
+        if not a or not b:
+            return None
+        norm_a = self._normalize_match_text(a)
+        norm_b = self._normalize_match_text(b)
+        if not norm_a or not norm_b:
+            return None
+        return SequenceMatcher(None, norm_a, norm_b).ratio()
+
+    @staticmethod
+    def _duration_similarity(a: Optional[int], b: Optional[int]) -> Optional[float]:
+        if not a or not b:
+            return None
+        diff = abs(a - b)
+        if diff > max(20, int(0.25 * max(a, b))):
+            return max(0.0, 1 - diff / (max(a, b) or 1))
+        return max(0.0, 1 - diff / (max(a, b) or 1))
+
+    @staticmethod
+    def _combine_similarity(title_ratio: Optional[float], duration_ratio: Optional[float]) -> Optional[float]:
+        score = 0.0
+        weight = 0.0
+        if title_ratio is not None:
+            score += title_ratio * 0.7
+            weight += 0.7
+        if duration_ratio is not None:
+            score += duration_ratio * 0.3
+            weight += 0.3
+        if weight == 0.0:
+            return None
+        return score / weight
+
+    @staticmethod
+    def _normalize_match_text(value: str) -> str:
+        cleaned = unicodedata.normalize("NFKD", value)
+        cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
+        cleaned = cleaned.lower()
+        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+        return cleaned.strip()
 
     @staticmethod
     def _safe_stat(path: Path):
@@ -1087,7 +1241,7 @@ class AudioMetaDaemon:
             title_hint = guess.title
         if not artist_hint and not album_hint and not title_hint:
             return []
-        results = self.discogs.search_candidates(artist=artist_hint, album=album_hint, title=title_hint, limit=5)
+        results = self.discogs.search_candidates(artist=artist_hint, album=album_hint, title=title_hint, limit=8)
         candidates = []
         for item in results:
             release_id = item.get("id")
@@ -1103,6 +1257,14 @@ class AudioMetaDaemon:
             title_value = (details or {}).get("title") or item.get("title")
             artist_similarity = self._token_overlap_ratio(artist_hint, artist_name)
             album_similarity = self._token_overlap_ratio(album_hint, title_value)
+            release_track_total = track_count or (details and len(details.get("tracklist") or [])) or 0
+            dir_tracks_val = meta.extra.get("TRACK_TOTAL")
+            dir_tracks = None
+            if isinstance(dir_tracks_val, str) and dir_tracks_val.isdigit():
+                dir_tracks = int(dir_tracks_val)
+            if release_track_total and release_track_total >= 3 and dir_tracks:
+                if abs(release_track_total - dir_tracks) > max(3, int(0.15 * max(dir_tracks, release_track_total))):
+                    continue
             if artist_similarity < 0.2 and album_similarity < 0.2:
                 continue
             candidates.append(
@@ -1418,6 +1580,10 @@ class AudioMetaDaemon:
     def _tokenize(value: Optional[str]) -> list[str]:
         if not value:
             return []
+        if isinstance(value, (list, tuple)):
+            value = " ".join(str(part) for part in value if part)
+        else:
+            value = str(value)
         cleaned = unicodedata.normalize("NFKD", value)
         cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
         cleaned = cleaned.lower()

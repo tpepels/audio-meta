@@ -47,6 +47,7 @@ organizer:
   enabled: true
   target_root: /srv/music
   classical_mixed_strategy: performer_album
+  cleanup_empty_dirs: true
 ```
 
 Non-classical releases land in `/Artist/Album`. Classical albums default to `/Composer/Performer/Album`, but when multiple composers appear on the same release the strategy falls back to `/Performer/Album`. Dry-run mode previews tag changes and planned moves before touching the filesystem.
@@ -60,6 +61,16 @@ audio-meta audit --config config.yaml
 ```
 
 The report lists each folder that appears to mix multiple album/artist combinations and/or contains duplicate track titles. It also shows example filenames so you can fix the directory manually before enabling the organizer again.
+
+### Cleanup mode
+
+After you’ve confirmed everything is tagged correctly, you can delete any leftover directories that no longer contain audio files (sleevenotes, artwork, etc.) with:
+
+```bash
+audio-meta cleanup --config config.yaml
+```
+
+Pass `--dry-run` to preview which directories would be removed before deleting anything. If you want this to happen automatically after each move, set `organizer.cleanup_empty_dirs: true` in the configuration.
 
 ## Daemon installation
 

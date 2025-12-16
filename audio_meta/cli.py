@@ -4,10 +4,12 @@ import argparse
 import asyncio
 import errno
 import logging
+import os
 import re
 import shutil
 import unicodedata
 from pathlib import Path
+from typing import Optional
 
 from mutagen import File as MutagenFile
 
@@ -18,7 +20,7 @@ from .heuristics import guess_metadata_from_path
 from .providers.validation import validate_providers
 from .scanner import LibraryScanner
 
-LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+LOG_FORMAT = "%(levelname).1s | %(name)s | %(message)s"
 
 C_RESET = "\033[0m"
 LEVEL_COLORS = {
@@ -30,7 +32,27 @@ LEVEL_COLORS = {
 }
 
 
-class ColorFormatter(logging.Formatter):
+class ShortPathFormatter(logging.Formatter):
+    def __init__(self, fmt: str, roots: list[Path]) -> None:
+        super().__init__(fmt)
+        self.roots = [str(root) for root in roots if root]
+
+    def _shorten(self, message: str) -> str:
+        for root in self.roots:
+            if not root:
+                continue
+            if not message:
+                break
+            message = message.replace(f"{root}/", "")
+            message = message.replace(root, "")
+        return message
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        return self._shorten(message)
+
+
+class ColorFormatter(ShortPathFormatter):
     def format(self, record: logging.LogRecord) -> str:
         message = super().format(record)
         color = LEVEL_COLORS.get(record.levelno)
@@ -86,31 +108,42 @@ def main() -> None:
     subparsers.add_parser("scan", help="Run a one-off scan")
     subparsers.add_parser("daemon", help="Start the watchdog daemon")
     subparsers.add_parser("audit", help="Report directories containing mixed album/artist metadata")
+    cleanup_parser = subparsers.add_parser(
+        "cleanup", help="Remove directories that only contain non-audio files"
+    )
+    cleanup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only report directories that would be deleted",
+    )
 
     args = parser.parse_args()
+    config_path = find_config(args.config)
+    settings = Settings.load(config_path)
+
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.setLevel(log_level)
 
+    display_roots = [root.resolve() for root in settings.library.roots]
+
     color_handler = logging.StreamHandler()
-    color_handler.setFormatter(ColorFormatter(LOG_FORMAT))
+    color_handler.setFormatter(ColorFormatter(LOG_FORMAT, display_roots))
     root_logger.addHandler(color_handler)
 
     warn_buffer = WarningBufferHandler()
-    warn_buffer.setFormatter(logging.Formatter(LOG_FORMAT))
+    warn_buffer.setFormatter(ShortPathFormatter(LOG_FORMAT, display_roots))
     root_logger.addHandler(warn_buffer)
 
     warn_log_path = Path.cwd() / "audio-meta-warnings.log"
     file_handler = logging.FileHandler(warn_log_path, encoding="utf-8")
     file_handler.setLevel(logging.WARNING)
-    file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    file_handler.setFormatter(ShortPathFormatter(LOG_FORMAT, display_roots))
     root_logger.addHandler(file_handler)
 
     logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
-    config_path = find_config(args.config)
-    settings = Settings.load(config_path)
     if args.reset_release_cache:
         cache = MetadataCache(settings.daemon.cache_path)
         cache.clear_directory_releases()
@@ -145,6 +178,8 @@ def main() -> None:
                 asyncio.run(daemon.run_daemon())
             case "audit":
                 audit_library(settings)
+            case "cleanup":
+                cleanup_directories(settings, dry_run=getattr(args, "dry_run", False))
             case _:
                 parser.error("Unknown command")
     finally:
@@ -279,6 +314,35 @@ def audit_library(settings: Settings) -> None:
         print()
 
 
+def cleanup_directories(settings: Settings, dry_run: bool = False) -> None:
+    audio_exts = {ext.lower() for ext in settings.library.include_extensions}
+    roots = [root.resolve() for root in settings.library.roots]
+    removed_dirs = 0
+    removed_files = 0
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+            path = Path(dirpath)
+            if path in roots:
+                continue
+            if _directory_has_audio_files(path, audio_exts):
+                continue
+            if dry_run:
+                print(f"[dry-run] Would remove {path} ({len(filenames)} files)")
+                continue
+            removed = _remove_tree(path)
+            if removed is None:
+                continue
+            removed_dirs += 1
+            removed_files += removed
+            print(f"Removed {path}")
+    suffix = " (dry-run)" if dry_run else ""
+    print(
+        f"Cleanup complete{suffix}: removed {removed_dirs} directories containing only non-audio files."
+    )
+    if not dry_run:
+        print(f"Deleted {removed_files} files with non-audio content.")
+
+
 def _display_relative(path: Path, roots: list[Path]) -> str:
     try:
         resolved = path.resolve()
@@ -322,3 +386,36 @@ def _normalize_text(value: str | None) -> str | None:
     cleaned = cleaned.lower()
     cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned).strip()
     return cleaned or None
+
+
+def _directory_has_audio_files(path: Path, extensions: set[str]) -> bool:
+    if not extensions:
+        return True
+    for root, _, files in os.walk(path):
+        for name in files:
+            if Path(name).suffix.lower() in extensions:
+                return True
+    return False
+
+
+def _remove_tree(path: Path) -> Optional[int]:
+    count = 0
+    try:
+        for root, dirs, files in os.walk(path, topdown=False):
+            root_path = Path(root)
+            for name in files:
+                try:
+                    (root_path / name).unlink()
+                    count += 1
+                except FileNotFoundError:
+                    continue
+            for name in dirs:
+                try:
+                    (root_path / name).rmdir()
+                except OSError:
+                    return None
+        path.rmdir()
+        return count
+    except OSError as exc:
+        logging.warning("Failed to remove %s: %s", path, exc)
+        return None
