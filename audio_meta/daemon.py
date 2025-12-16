@@ -440,7 +440,7 @@ class AudioMetaDaemon:
                     if details:
                         discogs_details[key] = details
 
-        release_scores = self._adjust_release_scores(
+        release_scores, coverage_map = self._adjust_release_scores(
             release_scores,
             release_examples,
             dir_track_count,
@@ -467,6 +467,49 @@ class AudioMetaDaemon:
         if forced_provider and forced_release_id and best_release_id == self._release_key(forced_provider, forced_release_id):
             forced_key = self._release_key(forced_provider, forced_release_id)
             ambiguous_candidates = [(forced_key, best_score)]
+        coverage_threshold = 0.7
+        coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
+        if best_release_id and coverage < coverage_threshold:
+            if self.interactive:
+                logger.warning(
+                    "Release %s matches only %.0f%% of tracks in %s; confirmation required",
+                    best_release_id,
+                    coverage * 100,
+                    self._display_path(batch.directory),
+                )
+                top_candidates = sorted(release_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+                sample_meta = pending_results[0].meta if pending_results else None
+                if sample_meta and dir_track_count:
+                    sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
+                selection = self._resolve_release_interactively(
+                    batch.directory,
+                    top_candidates,
+                    release_examples,
+                    sample_meta,
+                    dir_track_count,
+                    dir_year,
+                    discogs_details,
+                )
+                if selection is None:
+                    self._record_skip(batch.directory, "User skipped low-coverage release selection")
+                    logger.warning("Skipping %s due to low coverage", batch.directory)
+                    return
+                provider, selection_id = selection
+                best_release_id = self._release_key(provider, selection_id)
+                best_score = release_scores.get(best_release_id, 1.0)
+                ambiguous_candidates = [(best_release_id, best_score)]
+                coverage = coverage_map.get(best_release_id, 1.0)
+                forced_provider = provider
+                forced_release_id = selection_id
+            else:
+                logger.warning(
+                    "Release %s matches only %.0f%% of tracks in %s; skipping in non-interactive mode",
+                    best_release_id,
+                    coverage * 100,
+                    self._display_path(batch.directory),
+                )
+                self._record_skip(batch.directory, "Low coverage release match")
+                return
         if best_release_id and len(ambiguous_candidates) > 1:
             if self.interactive:
                 sample_meta = pending_results[0].meta if pending_results else None
@@ -751,8 +794,9 @@ class AudioMetaDaemon:
         pending_results: list[PendingResult],
         directory: Path,
         discogs_details: dict[str, dict],
-    ) -> dict[str, float]:
+    ) -> tuple[dict[str, float], dict[str, float]]:
         adjusted: dict[str, float] = {}
+        coverage_map: dict[str, float] = {}
         for key, base_score in scores.items():
             example = release_examples.get(key)
             bonus = 0.0
@@ -779,13 +823,16 @@ class AudioMetaDaemon:
                 elif diff >= 3:
                     bonus -= 0.03
             bonus += self._tag_overlap_bonus(example, pending_results, directory)
-            bonus += self._release_match_quality(
+            coverage = 1.0
+            extra_bonus, coverage = self._release_match_quality(
                 key,
                 pending_results,
                 discogs_details,
             )
+            bonus += extra_bonus
+            coverage_map[key] = coverage
             adjusted[key] = base_score + bonus
-        return adjusted
+        return adjusted, coverage_map
 
     def _tag_overlap_bonus(
         self,
@@ -828,17 +875,17 @@ class AudioMetaDaemon:
         key: str,
         pending_results: list[PendingResult],
         discogs_details: dict[str, dict],
-    ) -> float:
+    ) -> tuple[float, float]:
         provider, release_id = self._split_release_key(key)
         if provider != "musicbrainz":
-            return 0.0
+            return 0.0, 1.0
         release_data = self.musicbrainz.release_tracker.releases.get(release_id)
         if not release_data:
             release_data = self.musicbrainz._fetch_release_tracks(release_id)
             if release_data:
                 self.musicbrainz.release_tracker.releases[release_id] = release_data
         if not release_data or not release_data.tracks:
-            return 0.0
+            return 0.0, 0.0
         total = 0.0
         count = 0
         for pending in pending_results:
@@ -846,10 +893,11 @@ class AudioMetaDaemon:
             if track_score is not None:
                 total += track_score
                 count += 1
+        coverage = count / len(pending_results) if pending_results else 0.0
         if not count:
-            return 0.0
+            return 0.0, coverage
         avg = total / count
-        return min(0.08, avg * 0.08)
+        return min(0.08, avg * 0.08), coverage
 
     def _match_pending_to_release(self, meta: TrackMetadata, release: "ReleaseData") -> Optional[float]:
         title = meta.title or guess_metadata_from_path(meta.path).title
