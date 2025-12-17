@@ -123,6 +123,7 @@ class ReleaseData:
     def _normalize_title(value: str) -> Optional[str]:
         cleaned = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE).strip().lower()
         cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"^\d{1,3}\s+", "", cleaned)
         return cleaned or None
 
 

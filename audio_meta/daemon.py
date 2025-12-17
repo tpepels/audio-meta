@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import os
 import re
 import shutil
 import sys
 import unicodedata
-from difflib import SequenceMatcher
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Optional
 
-from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
 
+from .daemon_types import DryRunRecorder, PendingResult, PlannedUpdate, ReleaseExample
+from .match_utils import combine_similarity, duration_similarity, normalize_match_text, parse_discogs_duration, title_similarity
+from .release_selection import decide_release
+from .watchdog_handler import WatchHandler
 from .classical import ClassicalHeuristics
 from .heuristics import guess_metadata_from_path
 from .config import Settings
@@ -39,85 +39,6 @@ ANSI_MAGENTA = "\033[35m"
 ANSI_CYAN = "\033[36m"
 ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
-
-
-class DryRunRecorder:
-    def __init__(self, output_path: Path) -> None:
-        self.output_path = output_path
-        self._lock = Lock()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("", encoding="utf-8")
-
-    def record(
-        self,
-        meta: TrackMetadata,
-        score: Optional[float],
-        tag_changes: Optional[dict] = None,
-        relocate_from: Optional[Path] = None,
-        relocate_to: Optional[Path] = None,
-    ) -> None:
-        payload = meta.to_record()
-        payload["match_score"] = score
-        if tag_changes:
-            payload["tag_changes"] = tag_changes
-        if relocate_to:
-            payload["relocate_from"] = str(relocate_from or meta.path)
-            payload["relocate_to"] = str(relocate_to)
-        line = json.dumps(payload, indent=2, sort_keys=True)
-        with self._lock:
-            with self.output_path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-
-
-@dataclass
-class PlannedUpdate:
-    meta: TrackMetadata
-    score: Optional[float]
-    tag_changes: dict
-    target_path: Optional[Path]
-
-
-@dataclass
-class ReleaseExample:
-    provider: str
-    title: str
-    artist: str
-    date: Optional[str]
-    track_total: Optional[int]
-    disc_count: Optional[int]
-    formats: list[str]
-
-
-@dataclass
-class PendingResult:
-    meta: TrackMetadata
-    result: Optional[LookupResult]
-    matched: bool
-    existing_tags: dict[str, Optional[str]] = field(default_factory=dict)
-
-
-class _WatchHandler(FileSystemEventHandler):
-    def __init__(self, queue: asyncio.Queue[DirectoryBatch], exts: Iterable[str], scanner: LibraryScanner) -> None:
-        super().__init__()
-        self.queue = queue
-        self.exts = {ext.lower() for ext in exts}
-        self.scanner = scanner
-
-    def on_created(self, event: FileSystemEvent) -> None:
-        self._maybe_enqueue(event)
-
-    def on_modified(self, event: FileSystemEvent) -> None:
-        self._maybe_enqueue(event)
-
-    def _maybe_enqueue(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
-        if path.suffix.lower() in self.exts:
-            batch = self.scanner.collect_directory(path.parent)
-            if batch:
-                logger.debug("Queued directory change: %s", batch.directory)
-                asyncio.get_event_loop().call_soon_threadsafe(self.queue.put_nowait, batch)
 
 
 class AudioMetaDaemon:
@@ -194,7 +115,7 @@ class AudioMetaDaemon:
             await self._stop_workers(workers)
 
     def _bootstrap_watchdog(self) -> None:
-        handler = _WatchHandler(self.queue, self.settings.library.include_extensions, self.scanner)
+        handler = WatchHandler(self.queue, self.settings.library.include_extensions, self.scanner)
         observer = Observer()
         for root in self.settings.library.roots:
             observer.schedule(handler, str(root), recursive=True)
@@ -495,201 +416,32 @@ class AudioMetaDaemon:
                     if details:
                         discogs_details[key] = details
 
-        release_scores, coverage_map = self._adjust_release_scores(
-            release_scores,
-            release_examples,
+        decision = decide_release(
+            self,
+            batch.directory,
+            len(batch.files),
+            is_singleton,
             dir_track_count,
             dir_year,
             pending_results,
-            batch.directory,
+            release_scores,
+            release_examples,
             discogs_details,
+            forced_provider,
+            forced_release_id,
+            forced_release_score,
+            force_prompt,
+            release_summary_printed,
         )
-        best_release_id = None
-        best_score = 0.0
-        for rid, score in release_scores.items():
-            if score > best_score:
-                best_release_id = rid
-                best_score = score
-        ambiguous_cutoff = 0.05
-        if forced_provider and forced_release_id:
-            key = self._release_key(forced_provider, forced_release_id)
-            best_release_id = key
-            best_score = release_scores.get(key, forced_release_score or 1.0)
-            release_scores[key] = best_score
-        ambiguous_candidates = [
-            (rid, score) for rid, score in release_scores.items() if best_release_id and best_score - score <= ambiguous_cutoff
-        ]
-        if forced_provider and forced_release_id and best_release_id == self._release_key(forced_provider, forced_release_id):
-            forced_key = self._release_key(forced_provider, forced_release_id)
-            ambiguous_candidates = [(forced_key, best_score)]
-        if len(ambiguous_candidates) > 1:
-            auto_pick = self._auto_pick_equivalent_release(
-                ambiguous_candidates,
-                release_examples,
-                discogs_details,
-            )
-            if auto_pick:
-                best_release_id = auto_pick
-                best_score = release_scores.get(auto_pick, best_score)
-                ambiguous_candidates = [(auto_pick, best_score)]
-        if (
-            is_singleton
-            and len(ambiguous_candidates) > 1
-            and not (forced_provider and forced_release_id)
-        ):
-            home_pick = self._auto_pick_existing_release_home(
-                ambiguous_candidates,
-                batch.directory,
-                len(batch.files),
-                release_examples,
-            )
-            if home_pick:
-                best_release_id = home_pick
-                best_score = release_scores.get(home_pick, best_score)
-                ambiguous_candidates = [(home_pick, best_score)]
-        coverage_threshold = 0.0 if is_singleton else 0.7
-        coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
-        if best_release_id and coverage < coverage_threshold:
-            if self.defer_prompts and not force_prompt and not self._processing_deferred:
-                self._schedule_deferred_directory(batch.directory, "low_coverage")
-                return
-            if self.interactive:
-                logger.warning(
-                    "Release %s matches only %.0f%% of tracks in %s; confirmation required",
-                    best_release_id,
-                    coverage * 100,
-                    self._display_path(batch.directory),
-                )
-                top_candidates = sorted(release_scores.items(), key=lambda x: x[1], reverse=True)[:5]
-                sample_meta = pending_results[0].meta if pending_results else None
-                if sample_meta and dir_track_count:
-                    sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
-                selection = self._resolve_release_interactively(
-                    batch.directory,
-                    top_candidates,
-                    release_examples,
-                    sample_meta,
-                    dir_track_count,
-                    dir_year,
-                    discogs_details,
-                )
-                if selection is None:
-                    self._record_skip(batch.directory, "User skipped low-coverage release selection")
-                    logger.warning("Skipping %s due to low coverage", batch.directory)
-                    return
-                provider, selection_id = selection
-                best_release_id = self._release_key(provider, selection_id)
-                best_score = release_scores.get(best_release_id, 1.0)
-                ambiguous_candidates = [(best_release_id, best_score)]
-                coverage = coverage_map.get(best_release_id, 1.0)
-                forced_provider = provider
-                forced_release_id = selection_id
-            else:
-                logger.warning(
-                    "Release %s matches only %.0f%% of tracks in %s; skipping in non-interactive mode",
-                    best_release_id,
-                    coverage * 100,
-                    self._display_path(batch.directory),
-                )
-                self._record_skip(batch.directory, "Low coverage release match")
-                return
-        if best_release_id and len(ambiguous_candidates) > 1:
-            if self.defer_prompts and not force_prompt and not self._processing_deferred:
-                self._schedule_deferred_directory(batch.directory, "ambiguous_release")
-                return
-            if self.interactive:
-                sample_meta = pending_results[0].meta if pending_results else None
-                if sample_meta and dir_track_count:
-                    sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
-                selection = self._resolve_release_interactively(
-                    batch.directory,
-                    ambiguous_candidates,
-                    release_examples,
-                    sample_meta,
-                    dir_track_count,
-                    dir_year,
-                    discogs_details,
-                )
-                if selection is None:
-                    self._record_skip(batch.directory, "User skipped ambiguous release selection")
-                    logger.warning("Skipping %s per user choice", batch.directory)
-                    return
-                provider, selection_id = selection
-                if provider == "discogs":
-                    if not self.discogs:
-                        self._record_skip(batch.directory, "Discogs provider unavailable for manual selection")
-                        logger.warning("Discogs provider unavailable; cannot use selection for %s", batch.directory)
-                        return
-                    discogs_release_details = self.discogs.get_release(int(selection_id))
-                    if not discogs_release_details:
-                        self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
-                        logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
-                        return
-                    discogs_artist = self._discogs_release_artist(discogs_release_details)
-                    self._persist_directory_release(
-                        batch.directory,
-                        "discogs",
-                        selection_id,
-                        1.0,
-                        artist_hint=discogs_artist,
-                        album_hint=discogs_release_details.get("title"),
-                    )
-                    self._print_release_selection_summary(
-                        batch.directory,
-                        "discogs",
-                        selection_id,
-                        discogs_release_details.get("title"),
-                        discogs_artist,
-                        discogs_release_details.get("track_count"),
-                        discogs_release_details.get("disc_count"),
-                        pending_results,
-                    )
-                    release_summary_printed = True
-                    key = self._release_key("discogs", selection_id)
-                    discogs_details[key] = discogs_release_details
-                    best_release_id = key
-                    best_score = 1.0
-                    release_scores[key] = 1.0
-                else:
-                    key = self._release_key("musicbrainz", selection_id)
-                    best_release_id = key
-                    best_score = next(score for rid, score in ambiguous_candidates if rid == key)
-                    self._apply_musicbrainz_release_selection(
-                        batch.directory,
-                        selection_id,
-                        pending_results,
-                        force=True,
-                    )
-                    release_data = self.musicbrainz.release_tracker.releases.get(selection_id)
-                    if release_data:
-                        self._print_release_selection_summary(
-                            batch.directory,
-                            "musicbrainz",
-                            selection_id,
-                            release_data.album_title,
-                            release_data.album_artist,
-                            len(release_data.tracks) if release_data.tracks else None,
-                            release_data.disc_count,
-                            pending_results,
-                        )
-                        release_summary_printed = True
-                    release_scores[key] = max(release_scores.get(key, 0.0), best_score)
-            else:
-                self._warn_ambiguous_release(
-                    batch.directory,
-                    [
-                        (
-                            rid,
-                            score,
-                            release_examples.get(rid),
-                        )
-                        for rid, score in ambiguous_candidates
-                    ],
-                    dir_track_count,
-                    dir_year,
-                )
-                self._record_skip(batch.directory, "Ambiguous release matches in non-interactive mode")
-                return
+        if decision.should_abort:
+            return
+        best_release_id = decision.best_release_id
+        best_score = decision.best_score
+        forced_provider = decision.forced_provider
+        forced_release_id = decision.forced_release_id
+        forced_release_score = decision.forced_release_score
+        discogs_release_details = decision.discogs_release_details
+        release_summary_printed = decision.release_summary_printed
         applied_provider: Optional[str] = None
         applied_release_plain_id: Optional[str] = None
         if best_release_id:
@@ -1275,10 +1027,10 @@ class AudioMetaDaemon:
                     bonus += 0.05
                 elif ratio >= 0.7:
                     bonus += 0.02
-                elif ratio <= 0.55:
-                    bonus -= 0.07
                 elif ratio <= 0.4:
                     bonus -= 0.12
+                elif ratio <= 0.55:
+                    bonus -= 0.07
             release_year = self._parse_year(example.date if example else None)
             if dir_year and release_year:
                 diff = abs(release_year - dir_year)
@@ -1529,7 +1281,7 @@ class AudioMetaDaemon:
             for track in release_data.tracks:
                 if not track.title:
                     return None
-                entries.append((self._normalize_match_text(track.title), track.duration_seconds))
+                entries.append((normalize_match_text(track.title), track.duration_seconds))
             return entries
         if provider == "discogs":
             details = discogs_details.get(key)
@@ -1550,25 +1302,9 @@ class AudioMetaDaemon:
                 title = track.get("title")
                 if not title:
                     return None
-                entries.append((self._normalize_match_text(title), self._parse_discogs_duration(track.get("duration"))))
+                entries.append((normalize_match_text(title), parse_discogs_duration(track.get("duration"))))
             return entries or None
         return None
-
-    @staticmethod
-    def _parse_discogs_duration(value: Optional[str]) -> Optional[int]:
-        if not value or ":" not in value:
-            return None
-        parts = value.split(":", 1)
-        try:
-            minutes = int(parts[0])
-            seconds_str = parts[1]
-            if seconds_str.isdigit():
-                seconds = int(seconds_str)
-            else:
-                seconds = int(float(seconds_str))
-            return minutes * 60 + seconds
-        except (ValueError, TypeError):
-            return None
 
     def _match_pending_to_release(self, meta: TrackMetadata, release: "ReleaseData") -> Optional[float]:
         title = meta.title or guess_metadata_from_path(meta.path).title
@@ -1579,55 +1315,15 @@ class AudioMetaDaemon:
                 meta.duration_seconds = duration
         best = 0.0
         for track in release.tracks:
-            combined = self._combine_similarity(
-                self._title_similarity(title, track.title),
-                self._duration_similarity(duration, track.duration_seconds),
+            combined = combine_similarity(
+                title_similarity(title, track.title),
+                duration_similarity(duration, track.duration_seconds),
             )
             if combined is not None and combined > best:
                 best = combined
         if best <= 0.0:
             return None
         return best
-
-    def _title_similarity(self, a: Optional[str], b: Optional[str]) -> Optional[float]:
-        if not a or not b:
-            return None
-        norm_a = self._normalize_match_text(a)
-        norm_b = self._normalize_match_text(b)
-        if not norm_a or not norm_b:
-            return None
-        return SequenceMatcher(None, norm_a, norm_b).ratio()
-
-    @staticmethod
-    def _duration_similarity(a: Optional[int], b: Optional[int]) -> Optional[float]:
-        if not a or not b:
-            return None
-        diff = abs(a - b)
-        if diff > max(20, int(0.25 * max(a, b))):
-            return max(0.0, 1 - diff / (max(a, b) or 1))
-        return max(0.0, 1 - diff / (max(a, b) or 1))
-
-    @staticmethod
-    def _combine_similarity(title_ratio: Optional[float], duration_ratio: Optional[float]) -> Optional[float]:
-        score = 0.0
-        weight = 0.0
-        if title_ratio is not None:
-            score += title_ratio * 0.7
-            weight += 0.7
-        if duration_ratio is not None:
-            score += duration_ratio * 0.3
-            weight += 0.3
-        if weight == 0.0:
-            return None
-        return score / weight
-
-    @staticmethod
-    def _normalize_match_text(value: str) -> str:
-        cleaned = unicodedata.normalize("NFKD", value)
-        cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
-        cleaned = cleaned.lower()
-        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
-        return cleaned.strip()
 
     @staticmethod
     def _safe_stat(path: Path):

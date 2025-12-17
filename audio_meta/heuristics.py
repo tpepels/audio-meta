@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-TRACK_PATTERN = re.compile(r"^(?P<num>\d{1,3})(?:[\s._-]+)(?P<title>.+)$")
+_DASH_CHARS = "\u2010\u2011\u2012\u2013\u2014\u2212"
+TRACK_PATTERN = re.compile(rf"^(?P<num>\d{{1,3}})(?:[\s._\-{_DASH_CHARS}]+)(?P<title>.+)$")
 ARTIST_ALBUM_PATTERN = re.compile(r"^(?P<artist>[^/]+?)\s*[-–]\s*(?P<album>.+)$")
 
 
@@ -71,14 +72,12 @@ def _clean(value: str | None) -> Optional[str]:
 
 
 def _embedded_track_match(filename: str) -> Optional[tuple[int, str]]:
-    parts = filename.split(" - ")
-    if len(parts) < 3:
+    match = TRACK_PATTERN.match(filename)
+    if not match:
         return None
-    for idx, part in enumerate(parts[:-1]):
-        num_part = part.strip()
-        if num_part.isdigit():
-            num = int(num_part)
-            title = " - ".join(parts[idx + 1 :]).strip()
-            if title:
-                return num, title
-    return None
+    try:
+        num = int(match.group("num"))
+    except ValueError:
+        return None
+    title = match.group("title").strip()
+    return (num, title) if title else None
