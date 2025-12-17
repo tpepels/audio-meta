@@ -146,7 +146,9 @@ class AudioMetaDaemon:
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
         self.interactive = interactive
         self.release_cache_enabled = release_cache_enabled
-        self.defer_prompts = bool(interactive)
+        # Always persist "needs user input" decisions so daemon mode can queue them,
+        # and interactive scans can replay them after the scan completes.
+        self.defer_prompts = True
         self._use_color = sys.stdout.isatty()
         self.skip_reasons: dict[Path, str] = {}
         self._skip_lock = Lock()
@@ -160,7 +162,7 @@ class AudioMetaDaemon:
         self._deferred_set: set[Path] = set()
         self._processing_deferred = False
         self.archive_root = settings.organizer.archive_root
-        if self.defer_prompts:
+        if self.defer_prompts and self.interactive:
             self._sync_deferred_prompts()
 
     async def run_scan(self) -> None:
@@ -170,7 +172,7 @@ class AudioMetaDaemon:
         workers = self._start_workers()
         await self.queue.join()
         await self._stop_workers(workers)
-        if self.defer_prompts:
+        if self.defer_prompts and self.interactive:
             self._process_deferred_directories()
 
     async def run_daemon(self) -> None:
@@ -864,6 +866,25 @@ class AudioMetaDaemon:
                     break
         for plan in planned:
             self._apply_plan(plan)
+        if (
+            not self.dry_run_recorder
+            and self.release_cache_enabled
+            and best_release_id
+            and applied_provider
+            and applied_release_plain_id
+        ):
+            effective_score = release_scores.get(best_release_id, best_score)
+            if effective_score is None:
+                effective_score = 1.0
+            destination_dirs: set[Path] = set()
+            for plan in planned:
+                if not plan.target_path:
+                    continue
+                if plan.meta.path != plan.target_path:
+                    continue
+                destination_dirs.add(self._album_root(plan.meta.path.parent))
+            for dest_dir in destination_dirs:
+                self._persist_directory_release(dest_dir, applied_provider, applied_release_plain_id, float(effective_score))
         _cache_release_state()
         if release_home_dir and moved_into_release_home:
             self._reprocess_directory(release_home_dir)
@@ -943,6 +964,14 @@ class AudioMetaDaemon:
 
     def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
         if not self.defer_prompts:
+            return
+        if not self.interactive and not self._processing_deferred:
+            with self._defer_lock:
+                if directory in self._deferred_set:
+                    return
+                self._deferred_set.add(directory)
+            self.cache.add_deferred_prompt(directory, reason)
+            logger.info("Deferring %s (%s); will request input later", self._display_path(directory), reason)
             return
         with self._defer_lock:
             if directory in self._deferred_set:

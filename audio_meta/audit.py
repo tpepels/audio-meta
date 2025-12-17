@@ -279,12 +279,24 @@ class LibraryAuditor:
         album_key = self._normalize_token(meta.album)
         artist_source = meta.album_artist or meta.artist
         artist_key = self._normalize_token(artist_source)
-        composer_key = self._normalize_token(meta.composer if classical else None)
+        composer_key = self._normalize_token(self._primary_composer(meta.composer) if classical else None)
 
         if not album_key and not artist_key and not composer_key:
             return None
 
         return (composer_key, album_key, artist_key)
+
+    @staticmethod
+    def _primary_composer(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        if ";" not in value and "," not in value:
+            return value
+        parts = [part.strip() for part in re.split(r"[;,]+", value) if part and part.strip()]
+        for part in parts:
+            if re.search(r"[A-Za-z]", part):
+                return part
+        return parts[0] if parts else value
 
     def _best_directory_for_group(
         self,
