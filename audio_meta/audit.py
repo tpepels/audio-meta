@@ -83,7 +83,7 @@ class LibraryAuditor:
                     meta = TrackMetadata(path=path)
                     tags = self.tag_writer.read_existing_tags(meta) or {}
                     self._apply_tag_values(meta, tags)
-                    classical = self.heuristics.evaluate(meta).is_classical
+                    classical = self.heuristics.adapt_metadata(meta)
                     target = self.organizer.plan_target(meta, classical)
                     if not target:
                         continue
@@ -207,7 +207,7 @@ class LibraryAuditor:
                 meta = TrackMetadata(path=file_path)
                 tags = self.tag_writer.read_existing_tags(meta) or {}
                 self._apply_tag_values(meta, tags)
-                classical = self.heuristics.evaluate(meta).is_classical
+                classical = self.heuristics.adapt_metadata(meta)
                 canonical = self.organizer.canonical_target(meta, classical)
                 group_key = self._group_key(meta, classical)
                 if group_key:
