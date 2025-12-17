@@ -48,6 +48,7 @@ class OrganizerSettings(BaseModel):
     cleanup_empty_dirs: bool = False
     max_filename_length: int = 255
     archive_root: Optional[Path] = None
+    singleton_threshold: int = 2
 
     @field_validator("target_root", mode="before")
     @classmethod

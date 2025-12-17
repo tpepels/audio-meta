@@ -37,6 +37,7 @@ class Organizer:
         self.audio_extensions = {ext.lower() for ext in library_settings.include_extensions}
         self.cache = cache
         self._layout_cache: Dict[str, str] = {}
+        self._unknown_labels = {UNKNOWN_ARTIST, UNKNOWN_ALBUM}
 
     def canonical_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
         if not self.enabled:
@@ -137,7 +138,7 @@ class Organizer:
             return self._classical_directory(meta)
         artist = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
         album = self._safe(meta.album or self._guess_album(meta), UNKNOWN_ALBUM)
-        return self.target_root / artist / album
+        return self._build_path([("artist", artist), ("album", album)])
 
     def _classical_directory(self, meta: TrackMetadata) -> Optional[Path]:
         composer = self._safe(meta.composer, UNKNOWN_ARTIST)
@@ -208,10 +209,21 @@ class Organizer:
 
     def _path_for_layout(self, layout: str, composer: str, performer: str, album: str) -> Path:
         if layout == "composer_album":
-            return self.target_root / composer / album
-        if layout == "composer_performer_album":
-            return self.target_root / composer / performer / album
-        return self.target_root / performer / album
+            segments = [("composer", composer), ("album", album)]
+        elif layout == "composer_performer_album":
+            segments = [("composer", composer), ("performer", performer), ("album", album)]
+        else:
+            segments = [("performer", performer), ("album", album)]
+        return self._build_path(segments)
+
+    def _build_path(self, segments: list[tuple[str, str]]) -> Path:
+        path = self.target_root
+        for label_type, raw_value in segments:
+            fallback = UNKNOWN_ALBUM if label_type == "album" else UNKNOWN_ARTIST
+            value = raw_value or fallback
+            canonical = self._canonicalize_label(value, label_type, path)
+            path = path / canonical
+        return path
 
     @staticmethod
     def _safe(value: Optional[str], fallback: str) -> str:
@@ -273,3 +285,54 @@ class Organizer:
         except OSError as exc:
             logger.warning("Failed to remove %s: %s", directory, exc)
             return False
+
+    def _canonicalize_label(self, value: str, label_type: str, parent: Path) -> str:
+        if value in self._unknown_labels:
+            return value
+        normalized = self._normalize_token(value)
+        if not normalized:
+            return value
+        token = self._canonical_token(label_type, parent, normalized)
+        cached = self.cache.get_canonical_name(token) if (self.cache and token) else None
+        if cached:
+            return cached
+        existing = self._find_existing_label(parent, normalized)
+        canonical = existing or value
+        if token and self.cache and canonical not in self._unknown_labels:
+            self.cache.set_canonical_name(token, canonical)
+        return canonical
+
+    def _canonical_token(self, label_type: str, parent: Path, normalized_value: str) -> str:
+        parent_token = ""
+        try:
+            rel = parent.relative_to(self.target_root)
+            parent_token = self._normalize_token(str(rel))
+        except ValueError:
+            parent_token = self._normalize_token(str(parent))
+        return f"{label_type}:{parent_token}:{normalized_value}"
+
+    def _find_existing_label(self, parent: Path, normalized_value: str) -> Optional[str]:
+        try:
+            if not parent.exists():
+                return None
+        except FileNotFoundError:
+            return None
+        try:
+            for child in parent.iterdir():
+                try:
+                    if child.is_dir() and self._normalize_token(child.name) == normalized_value:
+                        return child.name
+                except OSError:
+                    continue
+        except OSError:
+            return None
+        return None
+
+    @staticmethod
+    def _normalize_token(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value)
+        ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+        ascii_only = ascii_only.lower()
+        ascii_only = re.sub(r"[^a-z0-9]+", " ", ascii_only)
+        ascii_only = re.sub(r"\s+", "", ascii_only)
+        return ascii_only

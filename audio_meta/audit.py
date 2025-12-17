@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from collections import defaultdict
-from pathlib import Path
 import unicodedata
 import re
+from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .cache import MetadataCache
@@ -16,6 +16,7 @@ from .heuristics import guess_metadata_from_path
 from .models import TrackMetadata
 from .organizer import Organizer
 from .tagging import TagWriter
+from .providers.musicbrainz import MusicBrainzClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,11 @@ class LibraryAuditor:
         self.organizer.enabled = True
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
+        self.musicbrainz: Optional[MusicBrainzClient] = None
+        try:
+            self.musicbrainz = MusicBrainzClient(settings.providers, cache=self.cache)
+        except Exception as exc:  # pragma: no cover - provider initialization errors are logged
+            logger.warning("MusicBrainz lookups disabled for singleton repair: %s", exc)
         self.extensions = {ext.lower() for ext in settings.library.include_extensions}
         self.library_roots = [root.resolve() for root in settings.library.roots]
 
@@ -216,6 +222,8 @@ class LibraryAuditor:
                     _, release_id, _ = release_entry
                 if not release_id and meta.musicbrainz_release_id:
                     release_id = meta.musicbrainz_release_id
+                if not release_id:
+                    release_id = self._ensure_release_id(directory, meta)
                 pending.append(
                     {
                         "directory": directory,
@@ -246,6 +254,12 @@ class LibraryAuditor:
                 if release_home and release_home != directory:
                     filename = canonical.name if canonical else file_path.name
                     target = self.organizer._truncate_target(release_home / filename)
+                    logger.debug(
+                        "Singleton %s matched group %s -> %s",
+                        directory,
+                        group_key,
+                        release_home,
+                    )
             entries.append(
                 SingletonEntry(
                     directory=directory,
@@ -293,8 +307,26 @@ class LibraryAuditor:
         ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
         ascii_only = ascii_only.lower()
         ascii_only = re.sub(r"[^a-z0-9]+", " ", ascii_only)
-        ascii_only = re.sub(r"\s+", " ", ascii_only).strip()
+        ascii_only = re.sub(r"\s+", "", ascii_only)
         return ascii_only
+
+    def _ensure_release_id(self, directory: Path, meta: TrackMetadata) -> Optional[str]:
+        if not self.musicbrainz:
+            return None
+        try_meta = TrackMetadata(path=meta.path)
+        try:
+            result = self.musicbrainz.enrich(try_meta)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("MusicBrainz lookup failed for singleton %s: %s", meta.path, exc)
+            return None
+        release_id = try_meta.musicbrainz_release_id
+        if not release_id:
+            return None
+        meta.musicbrainz_release_id = meta.musicbrainz_release_id or release_id
+        if self.cache:
+            score = (result.score if result else 0.0) or (try_meta.match_confidence or 0.0) or 0.5
+            self.cache.set_directory_release(directory, "musicbrainz", release_id, score)
+        return release_id
 
     def _find_release_home(self, release_id: Optional[str], current_dir: Path) -> Optional[Path]:
         if not self.cache or not release_id:

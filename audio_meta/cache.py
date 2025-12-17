@@ -90,6 +90,15 @@ class MetadataCache:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS canonical_names (
+                token TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS ignored_directories (
                 directory_path TEXT PRIMARY KEY,
                 reason TEXT,
@@ -405,5 +414,26 @@ class MetadataCache:
                 ON CONFLICT(release_key) DO UPDATE SET layout=excluded.layout, updated_at=excluded.updated_at
                 """,
                 (release_key, layout),
+            )
+            self._conn.commit()
+
+    def get_canonical_name(self, token: str) -> Optional[str]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT value FROM canonical_names WHERE token = ?",
+                (token,),
+            )
+            row = cursor.fetchone()
+        return row[0] if row else None
+
+    def set_canonical_name(self, token: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO canonical_names(token, value, updated_at)
+                VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(token) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (token, value),
             )
             self._conn.commit()

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -225,6 +226,7 @@ class AudioMetaDaemon:
         if not prepared:
             return
         batch = prepared
+        is_singleton = self._is_singleton_directory(batch)
         if self._directory_already_processed(batch):
             logger.debug("Skipping %s; already processed and organized", batch.directory)
             return
@@ -528,7 +530,7 @@ class AudioMetaDaemon:
                 best_release_id = auto_pick
                 best_score = release_scores.get(auto_pick, best_score)
                 ambiguous_candidates = [(auto_pick, best_score)]
-        coverage_threshold = 0.7
+        coverage_threshold = 0.0 if is_singleton else 0.7
         coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
         if best_release_id and coverage < coverage_threshold:
             if self.defer_prompts and not force_prompt and not self._processing_deferred:
@@ -756,6 +758,16 @@ class AudioMetaDaemon:
         else:
             album_name = album_artist = ""
 
+        release_home_dir: Optional[Path] = None
+        if is_singleton and applied_release_plain_id:
+            release_home_dir = self._find_release_home(applied_release_plain_id, batch.directory, len(batch.files))
+            if release_home_dir:
+                logger.debug(
+                    "Singleton directory %s relocating into %s",
+                    self._display_path(batch.directory),
+                    self._display_path(release_home_dir),
+                )
+
         for pending in pending_results:
             meta = pending.meta
             result = pending.result
@@ -784,6 +796,10 @@ class AudioMetaDaemon:
             is_classical = self.heuristics.adapt_metadata(meta)
             tag_changes = self.tag_writer.diff(meta)
             target_path = self.organizer.plan_target(meta, is_classical)
+            if release_home_dir:
+                override_target = self._plan_singleton_target(meta, release_home_dir, is_classical)
+                if override_target and not self._path_under_directory(meta.path, release_home_dir):
+                    target_path = override_target
             if not tag_changes and not target_path:
                 logger.debug("No changes required for %s", meta.path)
                 continue
@@ -840,9 +856,90 @@ class AudioMetaDaemon:
             logger.debug("No actionable files in %s", batch.directory)
             _cache_release_state()
             return
+        moved_into_release_home = False
+        if release_home_dir:
+            for plan in planned:
+                if plan.target_path and self._path_under_directory(plan.target_path, release_home_dir):
+                    moved_into_release_home = True
+                    break
         for plan in planned:
             self._apply_plan(plan)
         _cache_release_state()
+        if release_home_dir and moved_into_release_home:
+            self._reprocess_directory(release_home_dir)
+
+    def _is_singleton_directory(self, batch: DirectoryBatch) -> bool:
+        threshold = max(0, self.settings.organizer.singleton_threshold)
+        if threshold <= 0:
+            return False
+        return len(batch.files) <= threshold
+
+    def _count_audio_files(self, directory: Path) -> int:
+        if not directory.exists():
+            return 0
+        count = 0
+        for path in directory.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                if self.scanner._should_include(path):
+                    count += 1
+            except Exception:  # pragma: no cover - defensive
+                continue
+        return count
+
+    def _find_release_home(
+        self,
+        release_id: Optional[str],
+        current_dir: Path,
+        current_count: int,
+    ) -> Optional[Path]:
+        if not release_id:
+            return None
+        candidates = self.cache.find_directories_for_release(release_id)
+        best_dir: Optional[Path] = None
+        best_count = current_count
+        for raw in candidates:
+            candidate = Path(raw)
+            if candidate == current_dir or not candidate.exists():
+                continue
+            count = self._count_audio_files(candidate)
+            if count > best_count:
+                best_dir = candidate
+                best_count = count
+        return best_dir
+
+    def _plan_singleton_target(
+        self,
+        meta: TrackMetadata,
+        release_home_dir: Path,
+        is_classical: bool,
+    ) -> Optional[Path]:
+        canonical = self.organizer.canonical_target(meta, is_classical)
+        filename = Path(canonical).name if canonical else meta.path.name
+        target = release_home_dir / filename
+        try:
+            return self.organizer._truncate_target(target)
+        except AttributeError:  # pragma: no cover - organizer API safeguard
+            return target
+
+    def _path_under_directory(self, path: Path, directory: Path) -> bool:
+        try:
+            resolved_path = Path(path).resolve()
+            resolved_dir = directory.resolve()
+            resolved_path.relative_to(resolved_dir)
+            return True
+        except (ValueError, FileNotFoundError):
+            return False
+
+    def _reprocess_directory(self, directory: Path) -> None:
+        batch = self.scanner.collect_directory(directory)
+        if not batch:
+            return
+        try:
+            self._process_directory(batch, force_prompt=True)
+        except Exception:  # pragma: no cover - logged upstream
+            logger.warning("Failed to reprocess %s after singleton move", self._display_path(directory))
 
     def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
         if not self.defer_prompts:
