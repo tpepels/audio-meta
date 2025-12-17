@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from mutagen import File
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TALB, TPE1, TPE2, TCON, TCOM, COMM
+from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TALB, TPE1, TPE2, TCON, TCOM, COMM, TRCK, TPOS
 from mutagen.mp4 import MP4
 from mutagen.flac import FLAC
 
@@ -163,7 +163,14 @@ class TagWriter:
         self._set_frame(tags, TPE2, meta.album_artist)
         self._set_frame(tags, TCON, meta.genre)
         self._set_frame(tags, TCOM, meta.composer)
-        for key, value in meta.extra.items():
+        extra = self._stringify_extra(meta.extra)
+        track_number = extra.pop("TRACKNUMBER", None)
+        disc_number = extra.pop("DISCNUMBER", None)
+        if track_number:
+            tags.setall("TRCK", [TRCK(encoding=3, text=track_number)])
+        if disc_number:
+            tags.setall("TPOS", [TPOS(encoding=3, text=disc_number)])
+        for key, value in extra.items():
             self._set_frame(tags, COMM, value, desc=key)
         tags.save(meta.path)
 
@@ -197,16 +204,25 @@ class TagWriter:
         for key, value in mapping.items():
             if value:
                 self._set_mp4_value(audio, key, value)
-        for key, value in meta.extra.items():
+        extra = self._stringify_extra(meta.extra)
+        track_number = extra.pop("TRACKNUMBER", None)
+        disc_number = extra.pop("DISCNUMBER", None)
+        if track_number and track_number.isdigit():
+            audio["trkn"] = [(int(track_number), 0)]
+        if disc_number and disc_number.isdigit():
+            audio["disk"] = [(int(disc_number), 0)]
+        for key, value in extra.items():
             self._set_mp4_value(audio, f"----:com.audio-meta:{key}", value, freeform=True)
         audio.save()
 
-    def _write_vorbis_comments(self, audio: FLAC, mapping: Dict[str, str | None], extra: Dict[str, str]) -> None:
+    def _write_vorbis_comments(self, audio: FLAC, mapping: Dict[str, str | None], extra: Dict[str, Any]) -> None:
         for key, value in mapping.items():
             if value:
                 audio[key] = value
         for key, value in extra.items():
-            audio[key] = value
+            if value is None:
+                continue
+            audio[key] = value if isinstance(value, str) else str(value)
 
     def _set_frame(self, tags: ID3, frame_cls, value: str | None, desc: str = "") -> None:
         if value:
@@ -218,3 +234,12 @@ class TagWriter:
             audio[key] = [payload]
         else:
             audio[key] = [value]
+
+    @staticmethod
+    def _stringify_extra(extra: Dict[str, Any]) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for key, value in (extra or {}).items():
+            if value is None:
+                continue
+            result[str(key)] = value if isinstance(value, str) else str(value)
+        return result
