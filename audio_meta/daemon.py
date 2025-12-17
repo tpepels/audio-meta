@@ -224,12 +224,12 @@ class AudioMetaDaemon:
                 self.queue.task_done()
 
     def _process_directory(self, batch: DirectoryBatch, force_prompt: bool = False) -> None:
-        prepared = self._prepare_album_batch(batch)
+        prepared = self._prepare_album_batch(batch, force_prompt=force_prompt)
         if not prepared:
             return
         batch = prepared
         is_singleton = self._is_singleton_directory(batch)
-        if self._directory_already_processed(batch):
+        if self._directory_already_processed(batch) and not force_prompt:
             logger.debug("Skipping %s; already processed and organized", batch.directory)
             return
         display_path = self._display_path(batch.directory)
@@ -532,6 +532,21 @@ class AudioMetaDaemon:
                 best_release_id = auto_pick
                 best_score = release_scores.get(auto_pick, best_score)
                 ambiguous_candidates = [(auto_pick, best_score)]
+        if (
+            is_singleton
+            and len(ambiguous_candidates) > 1
+            and not (forced_provider and forced_release_id)
+        ):
+            home_pick = self._auto_pick_existing_release_home(
+                ambiguous_candidates,
+                batch.directory,
+                len(batch.files),
+                release_examples,
+            )
+            if home_pick:
+                best_release_id = home_pick
+                best_score = release_scores.get(home_pick, best_score)
+                ambiguous_candidates = [(home_pick, best_score)]
         coverage_threshold = 0.0 if is_singleton else 0.7
         coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
         if best_release_id and coverage < coverage_threshold:
@@ -761,8 +776,14 @@ class AudioMetaDaemon:
             album_name = album_artist = ""
 
         release_home_dir: Optional[Path] = None
-        if is_singleton and applied_release_plain_id:
-            release_home_dir = self._find_release_home(applied_release_plain_id, batch.directory, len(batch.files))
+        if is_singleton and applied_provider and applied_release_plain_id:
+            release_home_dir = self._select_singleton_release_home(
+                self._release_key(applied_provider, applied_release_plain_id),
+                batch.directory,
+                len(batch.files),
+                best_score,
+                pending_results[0].meta if pending_results else None,
+            )
             if release_home_dir:
                 logger.debug(
                     "Singleton directory %s relocating into %s",
@@ -856,6 +877,18 @@ class AudioMetaDaemon:
             if not any(p.matched for p in pending_results):
                 self._record_skip(batch.directory, "No metadata match found for directory")
             logger.debug("No actionable files in %s", batch.directory)
+            if (
+                best_release_id
+                and not is_singleton
+                and applied_provider
+                and applied_release_plain_id
+            ):
+                self._maybe_set_release_home(
+                    self._release_key(applied_provider, applied_release_plain_id),
+                    self._album_root(batch.directory),
+                    track_count=dir_track_count or self._count_audio_files(batch.directory),
+                    directory_hash=self.cache.get_directory_hash(batch.directory),
+                )
             _cache_release_state()
             return
         moved_into_release_home = False
@@ -885,6 +918,13 @@ class AudioMetaDaemon:
                 destination_dirs.add(self._album_root(plan.meta.path.parent))
             for dest_dir in destination_dirs:
                 self._persist_directory_release(dest_dir, applied_provider, applied_release_plain_id, float(effective_score))
+                if not is_singleton:
+                    self._maybe_set_release_home(
+                        self._release_key(applied_provider, applied_release_plain_id),
+                        dest_dir,
+                        track_count=self._count_audio_files(dest_dir),
+                        directory_hash=self.cache.get_directory_hash(dest_dir),
+                    )
         _cache_release_state()
         if release_home_dir and moved_into_release_home:
             self._reprocess_directory(release_home_dir)
@@ -917,6 +957,19 @@ class AudioMetaDaemon:
     ) -> Optional[Path]:
         if not release_id:
             return None
+        cached_key = self._release_key("musicbrainz", release_id)
+        cached_home = self.cache.get_release_home(cached_key)
+        if cached_home:
+            raw_path, _, cached_hash = cached_home
+            candidate = Path(raw_path)
+            if candidate.exists() and candidate != current_dir:
+                current_hash = self.cache.get_directory_hash(candidate)
+                if cached_hash and current_hash and cached_hash != current_hash:
+                    self.cache.delete_release_home(cached_key)
+                else:
+                    return candidate
+            elif not candidate.exists():
+                self.cache.delete_release_home(cached_key)
         candidates = self.cache.find_directories_for_release(release_id)
         best_dir: Optional[Path] = None
         best_count = current_count
@@ -929,6 +982,101 @@ class AudioMetaDaemon:
                 best_dir = candidate
                 best_count = count
         return best_dir
+
+    def _maybe_set_release_home(
+        self,
+        release_key: str,
+        directory: Path,
+        track_count: int,
+        directory_hash: Optional[str],
+    ) -> None:
+        min_tracks = 3
+        if track_count < min_tracks:
+            return
+        existing = self.cache.get_release_home(release_key)
+        if existing:
+            raw_path, existing_count, existing_hash = existing
+            existing_dir = Path(raw_path)
+            if not existing_dir.exists():
+                self.cache.delete_release_home(release_key)
+            else:
+                current_hash = self.cache.get_directory_hash(existing_dir)
+                if existing_hash and current_hash and existing_hash != current_hash:
+                    self.cache.delete_release_home(release_key)
+                else:
+                    effective_existing = int(existing_count or self._count_audio_files(existing_dir))
+                    if existing_dir != directory and effective_existing >= track_count:
+                        self.cache.set_release_home(
+                            release_key,
+                            existing_dir,
+                            track_count=effective_existing,
+                            directory_hash=current_hash or existing_hash,
+                        )
+                        return
+        self.cache.set_release_home(release_key, directory, track_count=track_count, directory_hash=directory_hash)
+
+    def _select_singleton_release_home(
+        self,
+        release_key: str,
+        current_dir: Path,
+        current_count: int,
+        best_release_score: float,
+        sample_meta: Optional[TrackMetadata],
+    ) -> Optional[Path]:
+        min_home_tracks = 3
+        min_release_score = 0.65
+        min_track_match = 0.85
+        provider, release_id = self._split_release_key(release_key)
+        if best_release_score < min_release_score:
+            return None
+        if provider != "musicbrainz" or not release_id:
+            return None
+        candidate_homes: set[Path] = set()
+        cached = self.cache.get_release_home(release_key)
+        if cached:
+            raw_path, _, cached_hash = cached
+            cached_path = Path(raw_path)
+            if cached_path.exists() and cached_path != current_dir:
+                current_hash = self.cache.get_directory_hash(cached_path)
+                if cached_hash and current_hash and cached_hash != current_hash:
+                    self.cache.delete_release_home(release_key)
+                else:
+                    candidate_homes.add(cached_path)
+            elif not cached_path.exists():
+                self.cache.delete_release_home(release_key)
+
+        fallback = self._find_release_home(release_id, current_dir, current_count)
+        if fallback and fallback != current_dir:
+            candidate_homes.add(fallback)
+        for raw in self.cache.find_directories_for_release(release_id):
+            candidate = Path(raw)
+            if candidate == current_dir or not candidate.exists():
+                continue
+            candidate_homes.add(self._album_root(candidate))
+
+        filtered: list[Path] = []
+        for home in sorted(candidate_homes, key=lambda p: str(p)):
+            count = self._count_audio_files(home)
+            if count >= min_home_tracks:
+                filtered.append(home)
+        if not filtered:
+            return None
+        if len(filtered) > 1:
+            if self.defer_prompts and not self._processing_deferred:
+                self._schedule_deferred_directory(current_dir, "release_home_conflict")
+            return None
+
+        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+        if not release_data:
+            release_data = self.musicbrainz._fetch_release_tracks(release_id)
+            if release_data:
+                self.musicbrainz.release_tracker.releases[release_id] = release_data
+        if not release_data or not release_data.tracks or not sample_meta:
+            return None
+        track_match = self._match_pending_to_release(sample_meta, release_data)
+        if not track_match or track_match < min_track_match:
+            return None
+        return filtered[0]
 
     def _plan_singleton_target(
         self,
@@ -1292,6 +1440,59 @@ class AudioMetaDaemon:
             key=lambda key: (priority.get(self._split_release_key(key)[0], 99), key),
         )
         return best_key
+
+    def _auto_pick_existing_release_home(
+        self,
+        candidates: list[tuple[str, float]],
+        directory: Path,
+        current_count: int,
+        release_examples: dict[str, ReleaseExample],
+    ) -> Optional[str]:
+        best_key: Optional[str] = None
+        best_rank: Optional[tuple[int, int, float, int, str]] = None
+        for key, score in candidates:
+            provider, release_id = self._split_release_key(key)
+            if provider != "musicbrainz" or not release_id:
+                continue
+            release_key = self._release_key(provider, release_id)
+            release_home, home_count = self._release_home_for_key(release_key, directory, current_count)
+            if not release_home or home_count <= 0:
+                continue
+            example = release_examples.get(key)
+            track_total = example.track_total if example else None
+            fit = abs(track_total - home_count) if track_total else 10_000
+            provider_priority = 0 if provider == "musicbrainz" else 1
+            rank = (home_count, -fit, float(score), -provider_priority, key)
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_key = key
+        return best_key
+
+    def _release_home_for_key(
+        self,
+        release_key: str,
+        current_dir: Path,
+        current_count: int,
+    ) -> tuple[Optional[Path], int]:
+        cached_home = self.cache.get_release_home(release_key)
+        if cached_home:
+            raw_path, cached_count, cached_hash = cached_home
+            candidate = Path(raw_path)
+            if candidate.exists() and candidate != current_dir:
+                current_hash = self.cache.get_directory_hash(candidate)
+                if cached_hash and current_hash and cached_hash != current_hash:
+                    self.cache.delete_release_home(release_key)
+                else:
+                    return candidate, int(cached_count or self._count_audio_files(candidate))
+            elif not candidate.exists():
+                self.cache.delete_release_home(release_key)
+        provider, plain = self._split_release_key(release_key)
+        if provider != "musicbrainz":
+            return None, 0
+        fallback = self._find_release_home(plain, current_dir, current_count)
+        if not fallback:
+            return None, 0
+        return fallback, self._count_audio_files(fallback)
 
     def _canonical_release_signature(
         self,
@@ -2230,14 +2431,14 @@ class AudioMetaDaemon:
                 continue
         return str(path)
 
-    def _prepare_album_batch(self, batch: DirectoryBatch) -> Optional[DirectoryBatch]:
+    def _prepare_album_batch(self, batch: DirectoryBatch, force_prompt: bool = False) -> Optional[DirectoryBatch]:
         directory = batch.directory
         album_root = self._album_root(directory)
         try:
             resolved_root = album_root.resolve()
         except FileNotFoundError:
             resolved_root = album_root
-        if resolved_root in self._processed_albums:
+        if not force_prompt and resolved_root in self._processed_albums:
             logger.debug("Album %s already processed; skipping %s", album_root, directory)
             return None
         self._processed_albums.add(resolved_root)

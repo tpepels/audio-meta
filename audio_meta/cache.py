@@ -90,6 +90,18 @@ class MetadataCache:
         )
         self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS release_homes (
+                release_key TEXT PRIMARY KEY,
+                directory_path TEXT NOT NULL,
+                track_count INTEGER,
+                directory_hash TEXT,
+                updated_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS canonical_names (
                 token TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
@@ -218,6 +230,7 @@ class MetadataCache:
             self._conn.execute("DELETE FROM directory_hashes")
             self._conn.execute("DELETE FROM hash_releases")
             self._conn.execute("DELETE FROM release_layouts")
+            self._conn.execute("DELETE FROM release_homes")
             self._conn.execute("DELETE FROM deferred_prompts")
             self._conn.commit()
 
@@ -414,6 +427,51 @@ class MetadataCache:
                 ON CONFLICT(release_key) DO UPDATE SET layout=excluded.layout, updated_at=excluded.updated_at
                 """,
                 (release_key, layout),
+            )
+            self._conn.commit()
+
+    def get_release_home(self, release_key: str) -> Optional[tuple[str, Optional[int], Optional[str]]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT directory_path, track_count, directory_hash FROM release_homes WHERE release_key = ?",
+                (release_key,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        directory_path, track_count, directory_hash = row
+        count = int(track_count) if track_count is not None else None
+        return str(directory_path), count, (str(directory_hash) if directory_hash else None)
+
+    def set_release_home(
+        self,
+        release_key: str,
+        directory: Path | str,
+        track_count: Optional[int] = None,
+        directory_hash: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO release_homes(release_key, directory_path, track_count, directory_hash, updated_at, last_seen)
+                VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(release_key)
+                DO UPDATE SET
+                    directory_path=excluded.directory_path,
+                    track_count=excluded.track_count,
+                    directory_hash=excluded.directory_hash,
+                    updated_at=excluded.updated_at,
+                    last_seen=excluded.last_seen
+                """,
+                (release_key, str(directory), track_count, directory_hash),
+            )
+            self._conn.commit()
+
+    def delete_release_home(self, release_key: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM release_homes WHERE release_key = ?",
+                (release_key,),
             )
             self._conn.commit()
 
