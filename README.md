@@ -49,17 +49,18 @@ organizer:
 
 ## Everyday workflow
 
-1. **Run a full pass**  
-   ```
-   audio-meta --config config.yaml run
-   ```
-   This command performs a scan (tagging + organizer moves) and then runs the audit with `--fix`, which relocates any straggler files whose tags disagree with their directory.
+1. **First run (step-by-step)**
+   1. Validate config and cache setup (optional): `audio-meta --config config.yaml doctor`
+   2. Run a scan: `audio-meta --config config.yaml scan`
+   3. Answer any deferred release prompts after the scan finishes (they persist if you quit early).
+   4. Run the audit and auto-fix stragglers: `audio-meta --config config.yaml audit --fix`
+   5. Review single-file directories: `audio-meta --config config.yaml singletons`
 
-2. **Answer deferred prompts**  
-   During the scan, any ambiguous releases are added to a queue. After the scan, you will automatically be prompted for each outstanding directory. Prompts persist in the cache, so if you quit early you will still be asked the next time you run `audio-meta run`.
+2. **Daily use**
+   - `audio-meta --config config.yaml run` runs a scan (tagging + organizer moves) and then runs the audit with `--fix`.
 
-3. **Review the summary**  
-   Warnings (including files that could not be matched or moved) are printed at the end and written to `audio-meta-warnings.log` in the working directory.
+3. **Review the summary**
+   - Warnings (including files that could not be matched or moved) are printed at the end and written to `audio-meta-warnings.log` in the working directory.
 
 ### Other commands
 
@@ -67,10 +68,12 @@ organizer:
 | ------- | ----------- |
 | `audio-meta --config config.yaml scan` | Run only the scanner (no audit). Use when you want to inspect before fixing. |
 | `audio-meta --config config.yaml audit` | Report misplaced files based on tags; add `--fix` to auto-move them. |
+| `audio-meta --config config.yaml audit-events` | Show recent pipeline audit events stored in the cache. |
 | `audio-meta --config config.yaml cleanup [--dry-run]` | Remove directories that contain no audio files (e.g., leftover artwork). |
 | `audio-meta --config config.yaml singletons` | Interactively review directories that currently contain a single audio file (keep/move/delete/ignore). |
 | `audio-meta --config config.yaml rollback-moves` | Undo the most recent organizer moves using the move history stored in the cache. |
 | `audio-meta --config config.yaml daemon` | Start the filesystem watcher to process new files continuously. |
+| `audio-meta --config config.yaml doctor` | Validate config/cache/pipeline; pass `--providers` to validate provider credentials via network. |
 
 Useful global flags (place them before the subcommand):
 
@@ -82,6 +85,22 @@ Advanced / troubleshooting flags:
 
 - `--disable-release-cache` – ignore cached directory-release matches for this run.
 - `--reset-release-cache` – drop all stored directory-release matches before starting.
+
+### Pipeline tuning
+
+The scanner is built from a plugin pipeline. You can disable specific plugins or override plugin order per stage:
+
+- `daemon.pipeline_disable` – list of plugin names to skip (e.g. `track_assignment`).
+- `daemon.pipeline_order` – per-stage list of plugin names; unspecified plugins run after the explicitly listed ones.
+
+See `config.sample.yaml` for the available stages and default ordering.
+For a stage-by-stage description of where decisions happen, see `docs/PIPELINE.md`.
+
+## Architecture boundaries
+
+- **Runtime**: `audio_meta/cli.py` (arg parsing), `audio_meta/app.py` (wires shared dependencies), `audio_meta/daemon.py` (async workers + watchdog).
+- **Business logic**: pipeline stages in `audio_meta/pipeline/plugins/`, plus reusable modules like `audio_meta/release_selection.py`, `audio_meta/release_home.py`, `audio_meta/release_scoring.py`, `audio_meta/organizer.py`, `audio_meta/tagging.py`.
+- **State**: `audio_meta/cache.py` is the persistent store used by both scan and audit flows.
 
 ## Deferred prompts & manual selections
 

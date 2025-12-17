@@ -84,6 +84,7 @@ class TagWriter:
                     "work": self._id3_text(tags, "TIT1"),
                     "movement": self._id3_text(tags, "MVNM"),
                     "tracknumber": self._id3_text(tags, "TRCK"),
+                    "discnumber": self._id3_text(tags, "TPOS"),
                 }
             if ext == ".flac":
                 audio = FLAC(meta.path)
@@ -97,6 +98,7 @@ class TagWriter:
                     "work": audio.get("WORK", [None])[0],
                     "movement": audio.get("MOVEMENT", [None])[0],
                     "tracknumber": audio.get("TRACKNUMBER", [None])[0],
+                    "discnumber": audio.get("DISCNUMBER", [None])[0],
                 }
             if ext == ".m4a":
                 audio = MP4(meta.path)
@@ -106,6 +108,12 @@ class TagWriter:
                     first = track_info[0]
                     if isinstance(first, (tuple, list)) and first:
                         track_number = str(first[0])
+                disc_info = audio.get("disk")
+                disc_number = None
+                if disc_info and isinstance(disc_info, list) and disc_info:
+                    first_disc = disc_info[0]
+                    if isinstance(first_disc, (tuple, list)) and first_disc:
+                        disc_number = str(first_disc[0])
                 return {
                     "title": self._mp4_text(audio, "\xa9nam"),
                     "album": self._mp4_text(audio, "\xa9alb"),
@@ -116,6 +124,7 @@ class TagWriter:
                     "work": self._mp4_text(audio, "----:com.apple.iTunes:WORK"),
                     "movement": self._mp4_text(audio, "----:com.apple.iTunes:MOVEMENT"),
                     "tracknumber": track_number,
+                    "discnumber": disc_number,
                 }
         except Exception as exc:  # pragma: no cover - depends on local files
             logger.debug("Failed to read tags for %s: %s", meta.path, exc)

@@ -36,7 +36,12 @@ class SingletonEntry:
 class LibraryAuditor:
     """Detects and optionally fixes files that are stored under the wrong artist/album."""
 
-    def __init__(self, settings: Settings, cache: Optional[MetadataCache] = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        cache: Optional[MetadataCache] = None,
+        musicbrainz: Optional[MusicBrainzClient] = None,
+    ) -> None:
         self.settings = settings
         self._cache = cache
         self._owns_cache = False
@@ -49,11 +54,12 @@ class LibraryAuditor:
         self.organizer.enabled = True
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
-        self.musicbrainz: Optional[MusicBrainzClient] = None
-        try:
-            self.musicbrainz = MusicBrainzClient(settings.providers, cache=self.cache)
-        except Exception as exc:  # pragma: no cover - provider initialization errors are logged
-            logger.warning("MusicBrainz lookups disabled for singleton repair: %s", exc)
+        self.musicbrainz = musicbrainz
+        if self.musicbrainz is None:
+            try:
+                self.musicbrainz = MusicBrainzClient(settings.providers, cache=self.cache)
+            except Exception as exc:  # pragma: no cover - provider initialization errors are logged
+                logger.warning("MusicBrainz lookups disabled for singleton repair: %s", exc)
         self.extensions = {ext.lower() for ext in settings.library.include_extensions}
         self.library_roots = [root.resolve() for root in settings.library.roots]
 

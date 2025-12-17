@@ -31,6 +31,18 @@ classical:
 daemon:
   worker_concurrency: 4
   cache_path: ./cache/cache.sqlite3
+  # Optional: disable built-in / entry-point pipeline plugins by `name`.
+  # Examples:
+  # pipeline_disable:
+  #   - singleton_target_override
+  #   - directory_audit
+  pipeline_disable: []
+  # Optional: order plugins (by `name`) within a stage. Unspecified plugins keep their relative order.
+  # Keys are stage names (e.g. `directory_skip_policies`, `plan_transforms`, `directory_diagnostics`).
+  # Example:
+  # pipeline_order:
+  #   directory_skip_policies: [processed_directory_skip, default_directory_skip]
+  pipeline_order: {}
 
 organizer:
   enabled: false

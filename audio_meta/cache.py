@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from threading import Lock
@@ -127,6 +128,16 @@ class MetadataCache:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -144,6 +155,60 @@ class MetadataCache:
 
     def set_release(self, release_id: str, value: dict) -> None:
         self._set("release", release_id, value)
+
+    def append_audit_event(self, event: str, payload: dict[str, Any]) -> None:
+        encoded = json.dumps(payload, sort_keys=True)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO audit_events(event, payload, created_at) VALUES(?, ?, CURRENT_TIMESTAMP)",
+                (event, encoded),
+            )
+            self._conn.commit()
+
+    def list_audit_events(
+        self,
+        *,
+        limit: int = 50,
+        event: str | None = None,
+        since_id: int | None = None,
+        since: str | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 1000))
+        since_id_value = int(since_id) if since_id is not None else None
+        since_ts = (since or "").strip() or None
+        with self._lock:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if event:
+                clauses.append("event = ?")
+                params.append(event)
+            if since_id_value is not None:
+                clauses.append("id > ?")
+                params.append(since_id_value)
+            if since_ts:
+                clauses.append("created_at >= ?")
+                params.append(since_ts)
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            cursor = self._conn.execute(
+                f"SELECT id, event, payload, created_at FROM audit_events{where} ORDER BY id DESC LIMIT ?",
+                (*params, limit),
+            )
+            rows = cursor.fetchall()
+        events: list[dict[str, Any]] = []
+        for row_id, row_event, payload_str, created_at in rows:
+            try:
+                payload = json.loads(payload_str) if payload_str else {}
+            except json.JSONDecodeError:
+                payload = {"_raw": payload_str}
+            events.append(
+                {
+                    "id": int(row_id),
+                    "event": str(row_event),
+                    "created_at": str(created_at),
+                    "payload": payload,
+                }
+            )
+        return events
 
     def get_discogs_release(self, release_id: str | int) -> Optional[dict]:
         return self._get("discogs_release", str(release_id))
@@ -233,6 +298,72 @@ class MetadataCache:
             self._conn.execute("DELETE FROM release_homes")
             self._conn.execute("DELETE FROM deferred_prompts")
             self._conn.commit()
+
+    def prune_missing_processed_files(self, max_entries: int = 10_000) -> int:
+        with self._lock:
+            cursor = self._conn.execute("SELECT path FROM processed_files LIMIT ?", (int(max_entries),))
+            rows = cursor.fetchall()
+        to_delete: list[str] = []
+        for (path_str,) in rows:
+            if path_str and not os.path.exists(path_str):
+                to_delete.append(path_str)
+        if not to_delete:
+            return 0
+        with self._lock:
+            self._conn.executemany("DELETE FROM processed_files WHERE path = ?", [(p,) for p in to_delete])
+            self._conn.commit()
+        return len(to_delete)
+
+    def prune_missing_moves(self, max_entries: int = 10_000) -> int:
+        with self._lock:
+            cursor = self._conn.execute("SELECT source_path, target_path FROM moves LIMIT ?", (int(max_entries),))
+            rows = cursor.fetchall()
+        to_delete: list[str] = []
+        for source_str, target_str in rows:
+            if not target_str or not os.path.exists(target_str):
+                to_delete.append(source_str)
+        if not to_delete:
+            return 0
+        with self._lock:
+            self._conn.executemany("DELETE FROM moves WHERE source_path = ?", [(s,) for s in to_delete])
+            self._conn.commit()
+        return len(to_delete)
+
+    def prune_missing_release_homes(self, max_entries: int = 10_000) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT release_key, directory_path FROM release_homes LIMIT ?",
+                (int(max_entries),),
+            )
+            rows = cursor.fetchall()
+        to_delete: list[str] = []
+        for release_key, directory_str in rows:
+            if not directory_str or not os.path.exists(directory_str):
+                to_delete.append(release_key)
+        if not to_delete:
+            return 0
+        with self._lock:
+            self._conn.executemany("DELETE FROM release_homes WHERE release_key = ?", [(k,) for k in to_delete])
+            self._conn.commit()
+        return len(to_delete)
+
+    def prune_missing_deferred_prompts(self, max_entries: int = 10_000) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT directory_path FROM deferred_prompts LIMIT ?",
+                (int(max_entries),),
+            )
+            rows = cursor.fetchall()
+        to_delete: list[str] = []
+        for (directory_str,) in rows:
+            if directory_str and not os.path.exists(directory_str):
+                to_delete.append(directory_str)
+        if not to_delete:
+            return 0
+        with self._lock:
+            self._conn.executemany("DELETE FROM deferred_prompts WHERE directory_path = ?", [(p,) for p in to_delete])
+            self._conn.commit()
+        return len(to_delete)
 
     def get_directory_release(self, directory: Path | str) -> Optional[tuple[str, str, float]]:
         with self._lock:

@@ -28,6 +28,7 @@ class LookupResult:
 @dataclass(slots=True)
 class ReleaseTrack:
     recording_id: str
+    disc_number: Optional[int]
     number: Optional[int]
     title: Optional[str]
     duration_seconds: Optional[int]
@@ -68,14 +69,14 @@ class ReleaseData:
         if duration:
             strategies.append((
                 "duration",
-                lambda t: t.duration_seconds is not None and abs(t.duration_seconds - duration) <= 3,
+                lambda t: t.duration_seconds is not None and abs(t.duration_seconds - duration) <= 5,
                 0.55,
             ))
         if guess.title:
-            title_norm = guess.title.lower()
+            title_norm = self._normalize_title(guess.title)
             strategies.append((
                 "title",
-                lambda t: t.title is not None and t.title.lower() == title_norm,
+                lambda t: t.title is not None and self._normalize_title(t.title or "") == title_norm,
                 0.5,
             ))
         for name, predicate, confidence in strategies:
@@ -121,9 +122,11 @@ class ReleaseData:
 
     @staticmethod
     def _normalize_title(value: str) -> Optional[str]:
-        cleaned = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE).strip().lower()
-        cleaned = re.sub(r"\s+", " ", cleaned)
-        cleaned = re.sub(r"^\d{1,3}\s+", "", cleaned)
+        from ..match_utils import normalize_title_for_match
+
+        cleaned = normalize_title_for_match(value)
+        if not cleaned:
+            return None
         return cleaned or None
 
 
@@ -619,7 +622,7 @@ class MusicBrainzClient:
         data = ReleaseData(release_id, release.get("title"), self._first_artist(release), release.get("date"))
         media = release.get("medium-list", [])
         data.disc_count = len(media)
-        for medium in media:
+        for medium_index, medium in enumerate(media, start=1):
             formats = medium.get("format-list") or ([medium.get("format")] if medium.get("format") else [])
             for fmt in formats:
                 if fmt and fmt not in data.formats:
@@ -632,6 +635,7 @@ class MusicBrainzClient:
                 data.add_track(
                     ReleaseTrack(
                         recording_id=recording.get("id"),
+                        disc_number=medium_index,
                         number=number,
                         title=recording.get("title"),
                         duration_seconds=duration,

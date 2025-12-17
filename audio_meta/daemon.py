@@ -7,28 +7,40 @@ import os
 import re
 import shutil
 import sys
-import unicodedata
-from collections import Counter
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Optional
 
 from watchdog.observers import Observer
 
-from .daemon_types import DryRunRecorder, PendingResult, PlannedUpdate, ReleaseExample
-from .match_utils import combine_similarity, duration_similarity, normalize_match_text, parse_discogs_duration, title_similarity
-from .release_selection import decide_release
+from .daemon_types import DryRunRecorder, PendingResult, ReleaseExample
+from .assignment import best_assignment_max_score
+from .match_utils import combine_similarity, duration_similarity, normalize_match_text, normalize_title_for_match, parse_discogs_duration, title_similarity
+from .pipeline import (
+    ProcessingPipeline,
+    TrackEnrichmentContext,
+    PlanApplyContext,
+    DirectoryContext,
+    TrackSkipContext,
+)
+from .pipeline import TrackSignalContext
 from .watchdog_handler import WatchHandler
 from .classical import ClassicalHeuristics
 from .heuristics import guess_metadata_from_path
 from .config import Settings
-from .models import ProcessingError, TrackMetadata
+from .models import TrackMetadata
 from .organizer import Organizer
 from .providers.discogs import DiscogsClient
-from .providers.musicbrainz import LookupResult, MusicBrainzClient
+from .providers.musicbrainz import LookupResult, MusicBrainzClient, ReleaseMatch
 from .scanner import DirectoryBatch, LibraryScanner
 from .tagging import TagWriter
 from .cache import MetadataCache
+from .services import AudioMetaServices
+from . import release_home as release_home_logic
+from . import deferred as deferred_logic
+from . import release_scoring as release_scoring_logic
+from . import directory_identity as directory_identity_logic
+from .album_batching import AlbumBatcher
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +57,27 @@ class AudioMetaDaemon:
     def __init__(
         self,
         settings: Settings,
+        cache: MetadataCache | None = None,
+        scanner: LibraryScanner | None = None,
+        musicbrainz: MusicBrainzClient | None = None,
+        discogs: DiscogsClient | None = None,
         dry_run_output: Optional[Path] = None,
         interactive: bool = False,
         release_cache_enabled: bool = True,
     ) -> None:
         self.settings = settings
-        self.cache = MetadataCache(settings.daemon.cache_path)
-        self.scanner = LibraryScanner(settings.library)
-        self.musicbrainz = MusicBrainzClient(settings.providers, cache=self.cache)
-        self.discogs = None
-        if settings.providers.discogs_token:
-            try:
-                self.discogs = DiscogsClient(settings.providers, cache=self.cache)
-            except Exception as exc:
-                logger.warning("Failed to initialise Discogs client: %s", exc)
+        self.cache = cache or MetadataCache(settings.daemon.cache_path)
+        self.services = AudioMetaServices(self)
+        self.scanner = scanner or LibraryScanner(settings.library)
+        self.musicbrainz = musicbrainz or MusicBrainzClient(settings.providers, cache=self.cache)
+        self.discogs = discogs
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
         self.organizer = Organizer(settings.organizer, settings.library, cache=self.cache)
+        self.pipeline = ProcessingPipeline(
+            disabled_plugins=set(settings.daemon.pipeline_disable),
+            plugin_order=dict(settings.daemon.pipeline_order),
+        )
         self.queue: asyncio.Queue[DirectoryBatch] = asyncio.Queue()
         self.observer: Observer | None = None
         self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
@@ -95,6 +111,7 @@ class AudioMetaDaemon:
         await self._stop_workers(workers)
         if self.defer_prompts and self.interactive:
             self._process_deferred_directories()
+        self.pipeline.after_scan(self)
 
     async def run_daemon(self) -> None:
         logger.debug("Starting daemon")
@@ -150,126 +167,56 @@ class AudioMetaDaemon:
             return
         batch = prepared
         is_singleton = self._is_singleton_directory(batch)
-        if self._directory_already_processed(batch) and not force_prompt:
-            logger.debug("Skipping %s; already processed and organized", batch.directory)
-            return
-        display_path = self._display_path(batch.directory)
-        planned: list[PlannedUpdate] = []
-        release_summary_printed = False
         logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
         directory_hash = self._calculate_directory_hash(batch.directory, batch.files)
-        hash_release_entry: Optional[tuple[str, str, float]] = None
-        cached_directory_hash = None
-        if directory_hash and self.release_cache_enabled:
-            hash_release_entry = self.cache.get_release_by_hash(directory_hash)
-            cached_directory_hash = self.cache.get_directory_hash(batch.directory)
-            if (
-                cached_directory_hash
-                and cached_directory_hash == directory_hash
-                and hash_release_entry
-                and not force_prompt
-            ):
-                logger.debug(
-                    "Skipping %s; directory unchanged (hash=%s)",
-                    display_path,
-                    directory_hash[:8],
-                )
-                return
+        dir_ctx = DirectoryContext(
+            daemon=self,
+            directory=batch.directory,
+            files=list(batch.files),
+            force_prompt=force_prompt,
+            is_singleton=is_singleton,
+            directory_hash=directory_hash,
+        )
+        if self.pipeline.should_skip_directory(dir_ctx):
+            return
         pending_results: list[PendingResult] = []
         release_scores: dict[str, float] = {}
         release_examples: dict[str, ReleaseExample] = {}
         discogs_details: dict[str, dict] = {}
-        dir_track_count, dir_year = self._directory_context(batch.directory, batch.files)
-        cached_discogs_release_details = None
-        forced_provider: Optional[str] = None
-        forced_release_id: Optional[str] = None
-        forced_release_score: float = 0.0
-        cached_release_entry = self._cached_release_for_directory(batch.directory)
-        if not cached_release_entry and hash_release_entry:
-            cached_release_entry = hash_release_entry
-        if cached_release_entry:
-            provider, cached_release_id, cached_score = cached_release_entry
-            forced_provider = provider
-            forced_release_id = cached_release_id
-            forced_release_score = cached_score
-            if provider == "musicbrainz":
-                self.musicbrainz.release_tracker.register(
-                    batch.directory,
-                    cached_release_id,
-                    self.musicbrainz._fetch_release_tracks,
-                )
-                self.musicbrainz.release_tracker.remember_release(batch.directory, cached_release_id, cached_score)
-                release_data = self.musicbrainz.release_tracker.releases.get(cached_release_id)
-                if release_data:
-                    key = self._release_key("musicbrainz", cached_release_id)
-                    release_examples[key] = ReleaseExample(
-                        provider="musicbrainz",
-                        title=release_data.album_title or "",
-                        artist=release_data.album_artist or "",
-                        date=release_data.release_date,
-                        track_total=len(release_data.tracks) if release_data.tracks else None,
-                        disc_count=release_data.disc_count or None,
-                        formats=list(release_data.formats),
-                    )
-                key = self._release_key("musicbrainz", cached_release_id)
-                release_scores[key] = max(release_scores.get(key, 0.0), cached_score or 1.0)
-            elif provider == "discogs" and self.discogs:
-                cached_discogs_release_details = self.discogs.get_release(int(cached_release_id))
-                if cached_discogs_release_details:
-                    key = self._release_key("discogs", cached_release_id)
-                    discogs_details[key] = cached_discogs_release_details
-                    release_examples[key] = ReleaseExample(
-                        provider="discogs",
-                        title=cached_discogs_release_details.get("title") or "",
-                        artist=self._discogs_release_artist(cached_discogs_release_details) or "",
-                        date=str(cached_discogs_release_details.get("year") or ""),
-                        track_total=len(cached_discogs_release_details.get("tracklist") or []),
-                        disc_count=cached_discogs_release_details.get("disc_count"),
-                        formats=cached_discogs_release_details.get("formats") or [],
-                    )
-                    release_scores[key] = max(release_scores.get(key, 0.0), cached_score or 1.0)
+        self.pipeline.analyze_directory(dir_ctx)
+        dir_track_count = dir_ctx.dir_track_count
+        dir_year = dir_ctx.dir_year
+        dir_ctx.pending_results = pending_results
+        dir_ctx.release_scores = release_scores
+        dir_ctx.release_examples = release_examples
+        dir_ctx.discogs_details = discogs_details
+        self.pipeline.initialize_directory(dir_ctx)
 
         for file_path in batch.files:
             meta = TrackMetadata(path=file_path)
             if dir_track_count:
                 meta.extra["TRACK_TOTAL"] = str(dir_track_count)
             existing_tags = self._read_existing_tags(meta)
-            if existing_tags:
-                self._apply_tag_hints(meta, existing_tags)
-            stat_before = None
-            if not self.dry_run_recorder:
-                stat_before = self._safe_stat(file_path)
-                if stat_before:
-                    cached_state = self.cache.get_processed_file(file_path)
-                    if cached_state:
-                        cached_mtime, cached_size, organized_flag = cached_state
-                        if cached_mtime == stat_before.st_mtime_ns and cached_size == stat_before.st_size:
-                            if self.organizer.enabled and not organized_flag:
-                                logger.debug("Reprocessing %s because organizer is now enabled", file_path)
-                            else:
-                                moved_target = self.cache.get_move(file_path)
-                                if moved_target and Path(moved_target).exists():
-                                    logger.warning(
-                                        "File %s already moved to %s; skipping stale copy",
-                                        file_path,
-                                        moved_target,
-                                    )
-                                    continue
-                                logger.debug("Skipping %s; already processed and unchanged", file_path)
-                                continue
-            result = self.musicbrainz.enrich(meta)
-            if result and self.discogs and self._needs_supplement(meta):
-                try:
-                    supplement = self.discogs.supplement(meta)
-                    if supplement:
-                        result = LookupResult(meta, score=max(result.score, supplement.score))
-                except Exception:
-                    logger.exception("Discogs supplement failed for %s", file_path)
-            if not result and self.discogs:
-                try:
-                    result = self.discogs.enrich(meta)
-                except Exception:
-                    logger.exception("Discogs lookup failed for %s", file_path)
+            self.pipeline.extract_signals(
+                TrackSignalContext(
+                    daemon=self,
+                    directory=batch.directory,
+                    meta=meta,
+                    existing_tags=dict(existing_tags),
+                )
+            )
+            if self.pipeline.should_skip_track(
+                TrackSkipContext(daemon=self, directory=batch.directory, file_path=file_path, directory_ctx=dir_ctx)
+            ):
+                continue
+            result = self.pipeline.enrich_track(
+                TrackEnrichmentContext(
+                    daemon=self,
+                    directory=batch.directory,
+                    meta=meta,
+                    existing_tags=dict(existing_tags),
+                )
+            )
             pending_results.append(
                 PendingResult(
                     meta=meta,
@@ -278,408 +225,69 @@ class AudioMetaDaemon:
                     existing_tags=dict(existing_tags),
                 )
             )
-            if result and meta.musicbrainz_release_id:
-                release_id = meta.musicbrainz_release_id
-                key = self._release_key("musicbrainz", release_id)
-                release_scores[key] = max(release_scores.get(key, 0.0), result.score)
-                release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-                release_examples[self._release_key("musicbrainz", release_id)] = ReleaseExample(
-                    provider="musicbrainz",
-                    title=release_data.album_title if release_data and release_data.album_title else meta.album or "",
-                    artist=release_data.album_artist if release_data and release_data.album_artist else meta.album_artist or meta.artist or "",
-                    date=release_data.release_date if release_data else None,
-                    track_total=len(release_data.tracks) if release_data and release_data.tracks else None,
-                    disc_count=release_data.disc_count if release_data and release_data.disc_count else None,
-                    formats=list(release_data.formats) if release_data else [],
-                )
-        discogs_release_details = None
-        if not release_scores and cached_discogs_release_details:
-            self._apply_discogs_release_details(pending_results, cached_discogs_release_details)
-        if not release_scores and self.interactive and pending_results:
-            if self.defer_prompts and not force_prompt:
-                self._schedule_deferred_directory(batch.directory, "no_release_candidates")
-                return
-            sample_meta = pending_results[0].meta if pending_results else None
-            if sample_meta and dir_track_count:
-                sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
-            selection = self._resolve_unmatched_directory(
-                batch.directory,
-                sample_meta,
-                dir_track_count,
-                dir_year,
-            )
-            if selection is None:
-                logger.warning("Skipping %s; no manual release selected", batch.directory)
-                return
-            provider, selection_id = selection
-            if provider == "discogs":
-                if not self.discogs:
-                    self._record_skip(batch.directory, "Discogs provider unavailable for manual selection")
-                    logger.warning("Discogs provider unavailable; cannot apply manual selection for %s", batch.directory)
-                    return
-                discogs_release_details = self.discogs.get_release(int(selection_id))
-                if not discogs_release_details:
-                    self._record_skip(batch.directory, f"Failed to load Discogs release {selection_id}")
-                    logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, batch.directory)
-                    return
-                self._apply_discogs_release_details(pending_results, discogs_release_details)
-                discogs_artist = self._discogs_release_artist(discogs_release_details)
-                disc_track_count, disc_disc_total = self._discogs_counts(discogs_release_details)
-                self._persist_directory_release(
-                    batch.directory,
-                    "discogs",
-                    selection_id,
-                    1.0,
-                    artist_hint=discogs_artist,
-                    album_hint=discogs_release_details.get("title"),
-                )
-                self._print_release_selection_summary(
-                    batch.directory,
-                    "discogs",
-                    selection_id,
-                    discogs_release_details.get("title"),
-                    discogs_artist,
-                    disc_track_count,
-                    disc_disc_total,
-                    pending_results,
-                )
-                release_summary_printed = True
-                key = self._release_key("discogs", selection_id)
-                discogs_details[key] = discogs_release_details
-                best_release_id = key
-                best_score = 1.0
-                release_scores[key] = 1.0
-            else:
-                applied = self._apply_musicbrainz_release_selection(
-                    batch.directory,
-                    selection_id,
-                    pending_results,
-                    force=True,
-                )
-                if not applied:
-                    self._record_skip(batch.directory, f"Manual MusicBrainz release {selection_id} did not match tracks")
-                    logger.warning("Manual MusicBrainz release %s did not match tracks in %s", selection_id, batch.directory)
-                    return
-                release_data = self.musicbrainz.release_tracker.releases.get(selection_id)
-                if release_data:
-                    key = self._release_key("musicbrainz", selection_id)
-                    release_examples[key] = ReleaseExample(
-                        provider="musicbrainz",
-                        title=release_data.album_title or "",
-                        artist=release_data.album_artist or "",
-                        date=release_data.release_date,
-                        track_total=len(release_data.tracks) if release_data.tracks else None,
-                        disc_count=release_data.disc_count or None,
-                        formats=list(release_data.formats),
-                    )
-                    self._print_release_selection_summary(
-                        batch.directory,
-                        "musicbrainz",
-                        selection_id,
-                        release_data.album_title,
-                        release_data.album_artist,
-                        len(release_data.tracks) if release_data.tracks else None,
-                        release_data.disc_count,
-                        pending_results,
-                    )
-                    release_summary_printed = True
-                key = self._release_key("musicbrainz", selection_id)
-                release_scores[key] = max(release_scores.get(key, 0.0), 1.0)
-                best_release_id = key
-                best_score = 1.0
+            # Release candidates are aggregated later via pipeline candidate sources.
+        if not release_scores and dir_ctx.discogs_release_details:
+            self._apply_discogs_release_details(pending_results, dir_ctx.discogs_release_details)
 
-        if self.discogs and pending_results:
-            sample_meta = pending_results[0].meta if pending_results else None
-            if sample_meta:
-                if dir_track_count:
-                    sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
-                for cand in self._discogs_candidates(sample_meta):
-                    release_id = str(cand.get("id"))
-                    if not release_id:
-                        continue
-                    key = self._release_key("discogs", release_id)
-                    if key in release_scores:
-                        continue
-                    base_score = cand.get("score")
-                    base_score = base_score if isinstance(base_score, (int, float)) else 0.5
-                    release_scores[key] = base_score
-                    release_examples[key] = ReleaseExample(
-                        provider="discogs",
-                        title=cand.get("title") or "",
-                        artist=cand.get("artist") or "",
-                        date=str(cand.get("year") or ""),
-                        track_total=cand.get("track_count"),
-                        disc_count=cand.get("disc_count"),
-                        formats=list(cand.get("formats") or []),
-                    )
-                    details = cand.get("details")
-                    if details:
-                        discogs_details[key] = details
+        dir_ctx.pending_results = pending_results
+        dir_ctx.release_scores = release_scores
+        dir_ctx.release_examples = release_examples
+        dir_ctx.discogs_details = discogs_details
+        self.pipeline.add_candidates(dir_ctx)
 
-        decision = decide_release(
-            self,
-            batch.directory,
-            len(batch.files),
-            is_singleton,
-            dir_track_count,
-            dir_year,
-            pending_results,
-            release_scores,
-            release_examples,
-            discogs_details,
-            forced_provider,
-            forced_release_id,
-            forced_release_score,
-            force_prompt,
-            release_summary_printed,
-        )
+        decision = self.pipeline.decide_release(dir_ctx)
         if decision.should_abort:
             return
         best_release_id = decision.best_release_id
         best_score = decision.best_score
-        forced_provider = decision.forced_provider
-        forced_release_id = decision.forced_release_id
-        forced_release_score = decision.forced_release_score
-        discogs_release_details = decision.discogs_release_details
-        release_summary_printed = decision.release_summary_printed
-        applied_provider: Optional[str] = None
-        applied_release_plain_id: Optional[str] = None
-        if best_release_id:
-            best_provider, best_release_plain_id = self._split_release_key(best_release_id)
-            applied_provider = best_provider
-            applied_release_plain_id = best_release_plain_id
-            example = release_examples.get(best_release_id)
-            album_name = example.title if example and example.title else ""
-            album_artist = example.artist if example and example.artist else ""
-            if best_provider == "musicbrainz":
-                release_ref = self.musicbrainz.release_tracker.releases.get(best_release_plain_id)
-                if not release_ref:
-                    release_ref = self.musicbrainz._fetch_release_tracks(best_release_plain_id)
-                    if release_ref:
-                        self.musicbrainz.release_tracker.releases[best_release_plain_id] = release_ref
-                if not release_ref:
-                    self._record_skip(batch.directory, f"MusicBrainz release {best_release_plain_id} unavailable")
-                    logger.warning("MusicBrainz release %s unavailable for %s", best_release_plain_id, batch.directory)
-                    return
-                if not album_name:
-                    album_name = release_ref.album_title or ""
-                if not album_artist:
-                    album_artist = release_ref.album_artist or ""
-                if not release_summary_printed:
-                    self._print_release_selection_summary(
-                        batch.directory,
-                        "musicbrainz",
-                        best_release_plain_id,
-                        album_name,
-                        album_artist,
-                        len(release_ref.tracks) if release_ref.tracks else None,
-                        release_ref.disc_count,
-                        pending_results,
-                    )
-                    release_summary_printed = True
-                self._persist_directory_release(
-                    batch.directory,
-                    "musicbrainz",
-                    best_release_plain_id,
-                    best_score,
-                    artist_hint=album_artist,
-                    album_hint=album_name,
-                )
-            else:
-                details = discogs_details.get(best_release_id)
-                if not details and self.discogs:
-                    try:
-                        details = self.discogs.get_release(int(best_release_plain_id))
-                    except Exception as exc:  # pragma: no cover
-                        logger.warning("Failed to load Discogs release %s: %s", best_release_plain_id, exc)
-                        details = None
-                    if details:
-                        discogs_details[best_release_id] = details
-                if not details:
-                    self._record_skip(batch.directory, f"Discogs release {best_release_plain_id} unavailable")
-                    logger.warning("Discogs release %s unavailable for %s", best_release_plain_id, batch.directory)
-                    return
-                discogs_release_details = details
-                self._apply_discogs_release_details(pending_results, details)
-                album_name = details.get("title") or album_name
-                discogs_artist = self._discogs_release_artist(details)
-                album_artist = discogs_artist or album_artist
-                if not release_summary_printed:
-                    self._print_release_selection_summary(
-                        batch.directory,
-                        "discogs",
-                        best_release_plain_id,
-                        album_name,
-                        album_artist,
-                        example.track_total if example else None,
-                        example.disc_count if example else None,
-                        pending_results,
-                    )
-                    release_summary_printed = True
-                self._persist_directory_release(
-                    batch.directory,
-                    "discogs",
-                    best_release_plain_id,
-                    best_score,
-                    artist_hint=album_artist,
-                    album_hint=album_name,
-                )
-        else:
-            album_name = album_artist = ""
+        dir_ctx.best_score = best_score
+        dir_ctx.forced_provider = decision.forced_provider
+        dir_ctx.forced_release_id = decision.forced_release_id
+        dir_ctx.forced_release_score = decision.forced_release_score
+        dir_ctx.set_best_release(best_release_id)
+        dir_ctx.discogs_release_details = decision.discogs_release_details
+        release_outcome = self.pipeline.finalize_release(dir_ctx, decision)
+        dir_ctx.applied_provider = release_outcome.provider
+        dir_ctx.applied_release_id = release_outcome.release_id
+        dir_ctx.album_name = release_outcome.album_name
+        dir_ctx.album_artist = release_outcome.album_artist
 
-        release_home_dir: Optional[Path] = None
-        if is_singleton and applied_provider and applied_release_plain_id:
-            release_home_dir = self._select_singleton_release_home(
-                self._release_key(applied_provider, applied_release_plain_id),
-                batch.directory,
-                len(batch.files),
-                best_score,
-                pending_results[0].meta if pending_results else None,
-            )
-            if release_home_dir:
-                logger.debug(
-                    "Singleton directory %s relocating into %s",
-                    self._display_path(batch.directory),
-                    self._display_path(release_home_dir),
-                )
-
-        for pending in pending_results:
-            meta = pending.meta
-            result = pending.result
-            matched = pending.matched
-            if discogs_release_details:
-                self.discogs.apply_release_details(meta, discogs_release_details, allow_overwrite=True)
-                matched = True
-                pending.matched = True
-            if not matched:
-                logger.warning("No metadata match for %s; leaving file untouched", meta.path)
-                continue
-            if best_release_id:
-                if applied_provider == "musicbrainz":
-                    if album_name:
-                        meta.album = album_name
-                    if album_artist:
-                        meta.album_artist = album_artist
-                    if applied_release_plain_id:
-                        meta.musicbrainz_release_id = applied_release_plain_id
-                else:
-                    if album_name:
-                        meta.album = album_name
-                    if album_artist:
-                        meta.album_artist = album_artist
-                    meta.musicbrainz_release_id = None
-            is_classical = self.heuristics.adapt_metadata(meta)
-            tag_changes = self.tag_writer.diff(meta)
-            target_path = self.organizer.plan_target(meta, is_classical)
-            if release_home_dir:
-                override_target = self._plan_singleton_target(meta, release_home_dir, is_classical)
-                if override_target and not self._path_under_directory(meta.path, release_home_dir):
-                    target_path = override_target
-            if not tag_changes and not target_path:
-                logger.debug("No changes required for %s", meta.path)
-                continue
-            planned.append(
-                PlannedUpdate(
-                    meta=meta,
-                    score=result.score if result else None,
-                    tag_changes=tag_changes,
-                    target_path=target_path,
-                )
-            )
+        self.pipeline.resolve_singleton_release_home(dir_ctx)
+        planned = self.pipeline.build_plans(dir_ctx)
+        self.pipeline.transform_plans(dir_ctx)
         unmatched_entries = [p for p in pending_results if not p.matched]
+        if unmatched_entries and best_release_id and self.interactive:
+            self.pipeline.assign_tracks(dir_ctx, force=True)
+            unmatched_entries = [p for p in pending_results if not p.matched]
         if unmatched_entries and best_release_id:
-            if self.defer_prompts and not force_prompt and not self._processing_deferred:
-                self._schedule_deferred_directory(batch.directory, "unmatched_tracks")
+            dir_ctx.unmatched = unmatched_entries
+            unmatched_decision = self.pipeline.handle_unmatched(dir_ctx)
+            if unmatched_decision.should_abort:
                 return
-            if self.interactive:
-                if not self._prompt_on_unmatched_release(batch.directory, best_release_id, unmatched_entries):
-                    self._record_skip(batch.directory, "User skipped due to unmatched tracks")
-                    logger.warning(
-                        "Skipping %s because %d tracks did not match release %s",
-                        batch.directory,
-                        len(unmatched_entries),
-                        best_release_id,
-                    )
-                    return
-            else:
-                logger.warning(
-                    "Release %s left %d tracks unmatched in %s",
-                    best_release_id,
-                    len(unmatched_entries),
-                    self._display_path(batch.directory),
-                )
-
-        should_cache_release = (
-            self.release_cache_enabled
-            and directory_hash
-            and best_release_id
-        )
-
-        def _cache_release_state() -> None:
-            if not should_cache_release or not directory_hash or not best_release_id:
-                return
-            provider, release_plain_id = self._split_release_key(best_release_id)
-            effective_score = release_scores.get(best_release_id, best_score)
-            if effective_score is None:
-                effective_score = 1.0
-            self.cache.set_release_by_hash(directory_hash, provider, release_plain_id, effective_score)
-            self.cache.set_directory_hash(batch.directory, directory_hash)
 
         if not planned:
-            if not any(p.matched for p in pending_results):
-                self._record_skip(batch.directory, "No metadata match found for directory")
             logger.debug("No actionable files in %s", batch.directory)
-            if (
-                best_release_id
-                and not is_singleton
-                and applied_provider
-                and applied_release_plain_id
-            ):
-                self._maybe_set_release_home(
-                    self._release_key(applied_provider, applied_release_plain_id),
-                    self._album_root(batch.directory),
-                    track_count=dir_track_count or self._count_audio_files(batch.directory),
-                    directory_hash=self.cache.get_directory_hash(batch.directory),
-                )
-            _cache_release_state()
+            self.pipeline.complete_directory(dir_ctx, applied_plans=False)
             return
-        moved_into_release_home = False
-        if release_home_dir:
-            for plan in planned:
-                if plan.target_path and self._path_under_directory(plan.target_path, release_home_dir):
-                    moved_into_release_home = True
-                    break
         for plan in planned:
-            self._apply_plan(plan)
-        if (
-            not self.dry_run_recorder
-            and self.release_cache_enabled
-            and best_release_id
-            and applied_provider
-            and applied_release_plain_id
-        ):
-            effective_score = release_scores.get(best_release_id, best_score)
-            if effective_score is None:
-                effective_score = 1.0
-            destination_dirs: set[Path] = set()
-            for plan in planned:
-                if not plan.target_path:
-                    continue
-                if plan.meta.path != plan.target_path:
-                    continue
-                destination_dirs.add(self._album_root(plan.meta.path.parent))
-            for dest_dir in destination_dirs:
-                self._persist_directory_release(dest_dir, applied_provider, applied_release_plain_id, float(effective_score))
-                if not is_singleton:
-                    self._maybe_set_release_home(
-                        self._release_key(applied_provider, applied_release_plain_id),
-                        dest_dir,
-                        track_count=self._count_audio_files(dest_dir),
-                        directory_hash=self.cache.get_directory_hash(dest_dir),
-                    )
-        _cache_release_state()
-        if release_home_dir and moved_into_release_home:
-            self._reprocess_directory(release_home_dir)
+            self.pipeline.apply_plan(PlanApplyContext(daemon=self, plan=plan))
+        self.pipeline.complete_directory(dir_ctx, applied_plans=True)
+
+    def _enrich_track_default(self, meta: TrackMetadata) -> Optional[LookupResult]:
+        result = self.musicbrainz.enrich(meta)
+        if result and self.discogs and self._needs_supplement(meta):
+            try:
+                supplement = self.discogs.supplement(meta)
+                if supplement:
+                    result = LookupResult(meta, score=max(result.score, supplement.score))
+            except Exception:
+                logger.exception("Discogs supplement failed for %s", meta.path)
+        if not result and self.discogs:
+            try:
+                result = self.discogs.enrich(meta)
+            except Exception:
+                logger.exception("Discogs lookup failed for %s", meta.path)
+        return result
 
     def _is_singleton_directory(self, batch: DirectoryBatch) -> bool:
         threshold = max(0, self.settings.organizer.singleton_threshold)
@@ -742,30 +350,13 @@ class AudioMetaDaemon:
         track_count: int,
         directory_hash: Optional[str],
     ) -> None:
-        min_tracks = 3
-        if track_count < min_tracks:
-            return
-        existing = self.cache.get_release_home(release_key)
-        if existing:
-            raw_path, existing_count, existing_hash = existing
-            existing_dir = Path(raw_path)
-            if not existing_dir.exists():
-                self.cache.delete_release_home(release_key)
-            else:
-                current_hash = self.cache.get_directory_hash(existing_dir)
-                if existing_hash and current_hash and existing_hash != current_hash:
-                    self.cache.delete_release_home(release_key)
-                else:
-                    effective_existing = int(existing_count or self._count_audio_files(existing_dir))
-                    if existing_dir != directory and effective_existing >= track_count:
-                        self.cache.set_release_home(
-                            release_key,
-                            existing_dir,
-                            track_count=effective_existing,
-                            directory_hash=current_hash or existing_hash,
-                        )
-                        return
-        self.cache.set_release_home(release_key, directory, track_count=track_count, directory_hash=directory_hash)
+        release_home_logic.maybe_set_release_home(
+            self,
+            release_key,
+            directory,
+            track_count=track_count,
+            directory_hash=directory_hash,
+        )
 
     def _select_singleton_release_home(
         self,
@@ -775,60 +366,14 @@ class AudioMetaDaemon:
         best_release_score: float,
         sample_meta: Optional[TrackMetadata],
     ) -> Optional[Path]:
-        min_home_tracks = 3
-        min_release_score = 0.65
-        min_track_match = 0.85
-        provider, release_id = self._split_release_key(release_key)
-        if best_release_score < min_release_score:
-            return None
-        if provider != "musicbrainz" or not release_id:
-            return None
-        candidate_homes: set[Path] = set()
-        cached = self.cache.get_release_home(release_key)
-        if cached:
-            raw_path, _, cached_hash = cached
-            cached_path = Path(raw_path)
-            if cached_path.exists() and cached_path != current_dir:
-                current_hash = self.cache.get_directory_hash(cached_path)
-                if cached_hash and current_hash and cached_hash != current_hash:
-                    self.cache.delete_release_home(release_key)
-                else:
-                    candidate_homes.add(cached_path)
-            elif not cached_path.exists():
-                self.cache.delete_release_home(release_key)
-
-        fallback = self._find_release_home(release_id, current_dir, current_count)
-        if fallback and fallback != current_dir:
-            candidate_homes.add(fallback)
-        for raw in self.cache.find_directories_for_release(release_id):
-            candidate = Path(raw)
-            if candidate == current_dir or not candidate.exists():
-                continue
-            candidate_homes.add(self._album_root(candidate))
-
-        filtered: list[Path] = []
-        for home in sorted(candidate_homes, key=lambda p: str(p)):
-            count = self._count_audio_files(home)
-            if count >= min_home_tracks:
-                filtered.append(home)
-        if not filtered:
-            return None
-        if len(filtered) > 1:
-            if self.defer_prompts and not self._processing_deferred:
-                self._schedule_deferred_directory(current_dir, "release_home_conflict")
-            return None
-
-        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-        if not release_data:
-            release_data = self.musicbrainz._fetch_release_tracks(release_id)
-            if release_data:
-                self.musicbrainz.release_tracker.releases[release_id] = release_data
-        if not release_data or not release_data.tracks or not sample_meta:
-            return None
-        track_match = self._match_pending_to_release(sample_meta, release_data)
-        if not track_match or track_match < min_track_match:
-            return None
-        return filtered[0]
+        return release_home_logic.select_singleton_release_home(
+            self,
+            release_key,
+            current_dir,
+            current_count,
+            best_release_score,
+            sample_meta,
+        )
 
     def _plan_singleton_target(
         self,
@@ -836,13 +381,7 @@ class AudioMetaDaemon:
         release_home_dir: Path,
         is_classical: bool,
     ) -> Optional[Path]:
-        canonical = self.organizer.canonical_target(meta, is_classical)
-        filename = Path(canonical).name if canonical else meta.path.name
-        target = release_home_dir / filename
-        try:
-            return self.organizer._truncate_target(target)
-        except AttributeError:  # pragma: no cover - organizer API safeguard
-            return target
+        return release_home_logic.plan_singleton_target(self, meta, release_home_dir, is_classical)
 
     def _path_under_directory(self, path: Path, directory: Path) -> bool:
         try:
@@ -863,100 +402,13 @@ class AudioMetaDaemon:
             logger.warning("Failed to reprocess %s after singleton move", self._display_path(directory))
 
     def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
-        if not self.defer_prompts:
-            return
-        if not self.interactive and not self._processing_deferred:
-            with self._defer_lock:
-                if directory in self._deferred_set:
-                    return
-                self._deferred_set.add(directory)
-            self.cache.add_deferred_prompt(directory, reason)
-            logger.info("Deferring %s (%s); will request input later", self._display_path(directory), reason)
-            return
-        with self._defer_lock:
-            if directory in self._deferred_set:
-                return
-            self._deferred_set.add(directory)
-            self._deferred_directories.append(directory)
-        self.cache.add_deferred_prompt(directory, reason)
-        logger.info("Deferring %s (%s); will request input later", self._display_path(directory), reason)
+        deferred_logic.schedule_directory(self, directory, reason)
 
     def _sync_deferred_prompts(self) -> None:
-        if not self.defer_prompts:
-            return
-        for directory_str, reason in self.cache.list_deferred_prompts():
-            path = Path(directory_str)
-            with self._defer_lock:
-                if path in self._deferred_set:
-                    continue
-                self._deferred_set.add(path)
-                self._deferred_directories.append(path)
+        deferred_logic.sync_from_cache(self)
 
     def _process_deferred_directories(self) -> None:
-        if not self.defer_prompts:
-            return
-        self._sync_deferred_prompts()
-        with self._defer_lock:
-            pending = list(self._deferred_directories)
-            self._deferred_directories.clear()
-            self._deferred_set.clear()
-        if not pending:
-            return
-        suffix = "ies" if len(pending) != 1 else "y"
-        logger.info("Processing %d deferred directory%s...", len(pending), suffix)
-        self._processing_deferred = True
-        try:
-            for directory in pending:
-                batch = self.scanner.collect_directory(directory)
-                if not batch:
-                    logger.warning("Deferred directory %s no longer exists; skipping", self._display_path(directory))
-                    self.cache.remove_deferred_prompt(directory)
-                    continue
-                self._process_directory(batch, force_prompt=True)
-                self.cache.remove_deferred_prompt(directory)
-        finally:
-            self._processing_deferred = False
-
-    def _apply_plan(self, plan: PlannedUpdate) -> None:
-        meta = plan.meta
-        tag_changes = plan.tag_changes
-        target_path = plan.target_path
-        if self.dry_run_recorder:
-            relocate_from = meta.path if target_path else None
-            self.dry_run_recorder.record(
-                meta,
-                plan.score,
-                tag_changes=tag_changes or None,
-                relocate_from=relocate_from,
-                relocate_to=target_path,
-            )
-            logger.debug("Dry-run recorded planned update for %s", meta.path)
-            if target_path:
-                self.organizer.move(meta, target_path, dry_run=True)
-            return
-        original_path = meta.path
-        organized_flag = self.organizer.enabled
-        try:
-            if target_path:
-                self.organizer.move(meta, target_path, dry_run=False)
-                self.cache.record_move(original_path, target_path)
-                self.organizer.cleanup_source_directory(original_path.parent)
-            if tag_changes:
-                self.tag_writer.apply(meta)
-                logger.debug("Updated tags for %s", meta.path)
-            else:
-                logger.debug("Tags already up to date for %s", meta.path)
-        except ProcessingError as exc:
-            logger.warning("Failed to update tags for %s: %s", meta.path, exc)
-            return
-        stat_after = self._safe_stat(meta.path)
-        if stat_after:
-            self.cache.set_processed_file(
-                meta.path,
-                stat_after.st_mtime_ns,
-                stat_after.st_size,
-                organized_flag,
-            )
+        deferred_logic.process_pending(self)
 
     def _needs_supplement(self, meta: TrackMetadata) -> bool:
         return not meta.album or not meta.artist or not meta.album_artist
@@ -991,6 +443,20 @@ class AudioMetaDaemon:
         assign("genre", "genre")
         assign("work", "work")
         assign("movement", "movement")
+        track_number = tags.get("tracknumber") or tags.get("track_number")
+        if track_number and "TRACKNUMBER" not in meta.extra:
+            cleaned = track_number.strip()
+            if "/" in cleaned:
+                cleaned = cleaned.split("/", 1)[0]
+            if cleaned.isdigit():
+                meta.extra["TRACKNUMBER"] = int(cleaned)
+        disc_number = tags.get("discnumber") or tags.get("disc_number")
+        if disc_number and "DISCNUMBER" not in meta.extra:
+            cleaned = disc_number.strip()
+            if "/" in cleaned:
+                cleaned = cleaned.split("/", 1)[0]
+            if cleaned.isdigit():
+                meta.extra["DISCNUMBER"] = int(cleaned)
 
     @staticmethod
     def _prepare_tag_value(value: Optional[str]) -> Optional[str]:
@@ -1013,159 +479,16 @@ class AudioMetaDaemon:
         directory: Path,
         discogs_details: dict[str, dict],
     ) -> tuple[dict[str, float], dict[str, float]]:
-        adjusted: dict[str, float] = {}
-        coverage_map: dict[str, float] = {}
-        for key, base_score in scores.items():
-            example = release_examples.get(key)
-            bonus = 0.0
-            release_track_total = example.track_total if example else None
-            if dir_track_count and release_track_total:
-                ratio = min(dir_track_count, release_track_total) / max(dir_track_count, release_track_total)
-                if ratio >= 0.95:
-                    bonus += 0.08
-                elif ratio >= 0.85:
-                    bonus += 0.05
-                elif ratio >= 0.7:
-                    bonus += 0.02
-                elif ratio <= 0.4:
-                    bonus -= 0.12
-                elif ratio <= 0.55:
-                    bonus -= 0.07
-            release_year = self._parse_year(example.date if example else None)
-            if dir_year and release_year:
-                diff = abs(release_year - dir_year)
-                if diff == 0:
-                    bonus += 0.035
-                elif diff == 1:
-                    bonus += 0.015
-                elif diff >= 3:
-                    bonus -= 0.03
-            bonus += self._tag_overlap_bonus(example, pending_results, directory)
-            coverage = 1.0
-            extra_bonus, coverage = self._release_match_quality(
-                key,
-                pending_results,
-                discogs_details,
-            )
-            bonus += extra_bonus
-            coverage_map[key] = coverage
-            adjusted[key] = base_score + bonus
-        return adjusted, coverage_map
-
-    def _tag_overlap_bonus(
-        self,
-        example: Optional[ReleaseExample],
-        pending_results: list[PendingResult],
-        directory: Path,
-    ) -> float:
-        if not example:
-            return 0.0
-        bonus = 0.0
-        first_meta = pending_results[0].meta if pending_results else None
-        tag_artist, tag_album = self._aggregated_tag_hints(pending_results)
-        release_artist = example.artist or None
-        release_album = example.title or None
-        primary_artist = tag_artist or (first_meta.album_artist or first_meta.artist if first_meta else None)
-        primary_album = tag_album or (first_meta.album if first_meta else None)
-        if primary_artist:
-            weight = 1.2 if tag_artist else 0.8
-            bonus += self._weighted_overlap(self._token_overlap_ratio(primary_artist, release_artist), weight)
-        if primary_album:
-            weight = 1.2 if tag_album else 0.8
-            bonus += self._weighted_overlap(self._token_overlap_ratio(primary_album, release_album), weight)
-        hint_artist, hint_album = self._path_based_hints(directory)
-        bonus += self._weighted_overlap(self._token_overlap_ratio(hint_artist, release_artist), 0.5)
-        bonus += self._weighted_overlap(self._token_overlap_ratio(hint_album, release_album), 0.5)
-        return max(-0.05, min(0.05, bonus))
-
-    @staticmethod
-    def _overlap_delta(ratio: Optional[float]) -> float:
-        if ratio is None:
-            return 0.0
-        if ratio >= 0.75:
-            return 0.02
-        if ratio >= 0.6:
-            return 0.01
-        if ratio <= 0.2:
-            return -0.02
-        return 0.0
-
-    def _weighted_overlap(self, ratio: Optional[float], weight: float) -> float:
-        if weight <= 0:
-            return 0.0
-        return self._overlap_delta(ratio) * weight
-
-    def _aggregated_tag_hints(self, pending_results: list[PendingResult]) -> tuple[Optional[str], Optional[str]]:
-        artist_values: list[str] = []
-        album_values: list[str] = []
-        for pending in pending_results:
-            tags = pending.existing_tags
-            if not tags:
-                continue
-            for candidate in (tags.get("album_artist"), tags.get("artist")):
-                if candidate:
-                    artist_values.append(candidate)
-                    break
-            album_candidate = tags.get("album")
-            if album_candidate:
-                album_values.append(album_candidate)
-        artist = self._dominant_value(artist_values)
-        album = self._dominant_value(album_values)
-        return artist, album
-
-    def _dominant_value(self, candidates: list[str]) -> Optional[str]:
-        counter: Counter[str] = Counter()
-        canonical_map: dict[str, str] = {}
-        for candidate in candidates:
-            cleaned = self._clean_tag_hint(candidate)
-            if not cleaned:
-                continue
-            canonical = cleaned.lower()
-            counter[canonical] += 1
-            canonical_map.setdefault(canonical, cleaned)
-        if not counter:
-            return None
-        canonical, _ = counter.most_common(1)[0]
-        return canonical_map.get(canonical)
-
-    @staticmethod
-    def _clean_tag_hint(value: Optional[str]) -> Optional[str]:
-        if not value:
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        normalized = unicodedata.normalize("NFKD", cleaned)
-        return normalized.strip()
-
-    def _release_match_quality(
-        self,
-        key: str,
-        pending_results: list[PendingResult],
-        discogs_details: dict[str, dict],
-    ) -> tuple[float, float]:
-        provider, release_id = self._split_release_key(key)
-        if provider != "musicbrainz":
-            return 0.0, 1.0
-        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-        if not release_data:
-            release_data = self.musicbrainz._fetch_release_tracks(release_id)
-            if release_data:
-                self.musicbrainz.release_tracker.releases[release_id] = release_data
-        if not release_data or not release_data.tracks:
-            return 0.0, 0.0
-        total = 0.0
-        count = 0
-        for pending in pending_results:
-            track_score = self._match_pending_to_release(pending.meta, release_data)
-            if track_score is not None:
-                total += track_score
-                count += 1
-        coverage = count / len(pending_results) if pending_results else 0.0
-        if not count:
-            return 0.0, coverage
-        avg = total / count
-        return min(0.08, avg * 0.08), coverage
+        return release_scoring_logic.adjust_release_scores(
+            self,
+            scores=scores,
+            release_examples=release_examples,
+            dir_track_count=dir_track_count,
+            dir_year=dir_year,
+            pending_results=pending_results,
+            directory=directory,
+            discogs_details=discogs_details,
+        )
 
     def _auto_pick_equivalent_release(
         self,
@@ -1325,6 +648,60 @@ class AudioMetaDaemon:
             return None
         return best
 
+    def _log_unmatched_candidates(
+        self,
+        directory: Path,
+        release_key: str,
+        unmatched: list[PendingResult],
+    ) -> None:
+        provider, release_id = self._split_release_key(release_key)
+        if provider != "musicbrainz" or not release_id:
+            return
+        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+        if not release_data:
+            release_data = self.musicbrainz._fetch_release_tracks(release_id)
+            if release_data:
+                self.musicbrainz.release_tracker.releases[release_id] = release_data
+        if not release_data or not release_data.tracks:
+            return
+        display = self._display_path(directory)
+        for pending in unmatched[:5]:
+            meta = pending.meta
+            guess = guess_metadata_from_path(meta.path)
+            title = meta.title or guess.title or meta.path.stem
+            title_norm = normalize_title_for_match(title) or title
+            track_number = meta.extra.get("TRACKNUMBER")
+            disc_number = meta.extra.get("DISCNUMBER")
+            candidates: list[tuple[float, str]] = []
+            for track in release_data.tracks:
+                score = 0.0
+                if meta.musicbrainz_track_id and track.recording_id and meta.musicbrainz_track_id == track.recording_id:
+                    score = 1.0
+                else:
+                    if isinstance(track_number, int) and track.number:
+                        diff = abs(track.number - track_number)
+                        if diff == 0:
+                            score += 0.62
+                        elif diff == 1:
+                            score += 0.28
+                    if isinstance(disc_number, int) and track.disc_number:
+                        score += 0.08 if disc_number == track.disc_number else -0.04
+                    ratio = title_similarity(title_norm, track.title) or 0.0
+                    score += 0.25 * ratio
+                    dur_ratio = duration_similarity(meta.duration_seconds, track.duration_seconds)
+                    if dur_ratio is not None:
+                        score += 0.05 * dur_ratio
+                label = f"D{track.disc_number or '?'}:{track.number or '?'} {track.title or '<untitled>'}"
+                candidates.append((score, label))
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            top = ", ".join(f"{label} ({score:.2f})" for score, label in candidates[:3])
+            logger.info(
+                "Unmatched track in %s: %s -> top candidates: %s",
+                display,
+                meta.path.name,
+                top,
+            )
+
     @staticmethod
     def _safe_stat(path: Path):
         try:
@@ -1332,31 +709,21 @@ class AudioMetaDaemon:
         except FileNotFoundError:
             return None
 
-    @staticmethod
     def _warn_ambiguous_release(
+        self,
         directory: Path,
         releases: list[tuple[str, float, Optional[ReleaseExample]]],
         dir_track_count: int,
         dir_year: Optional[int],
     ) -> None:
-        hint = f"{dir_track_count} audio files" if dir_track_count else "unknown track count"
-        if dir_year:
-            hint = f"{hint}; year hint {dir_year}"
-        entry_texts = []
-        for key, score, example in releases:
-            provider, release_id = AudioMetaDaemon._split_release_key(key)
-            entry_texts.append(
-                f"[{provider[:2].upper()}] {(example.title if example else '') or release_id} "
-                f"({release_id}, score={score:.2f}, year={AudioMetaDaemon._parse_year(example.date if example else None) or '?'}, "
-                f"tracks={example.track_total if example and example.track_total else '?'})"
-            )
-        entries = ", ".join(entry_texts)
-        logger.warning(
-            "Ambiguous release detection for %s (%s) – multiple albums scored similarly: %s. "
-            "Skipping this directory; adjust tags or split folders, then rerun.",
-            self._display_path(directory),
-            hint,
-            entries,
+        release_scoring_logic.warn_ambiguous_release(
+            self.services.display_path(directory),
+            directory,
+            releases,
+            dir_track_count,
+            dir_year,
+            parse_year=self._parse_year,
+            split_release_key=self._split_release_key,
         )
 
     def _resolve_release_interactively(
@@ -1590,11 +957,73 @@ class AudioMetaDaemon:
     def _apply_discogs_release_details(self, pending_results: list[PendingResult], release_details: dict) -> None:
         if not self.discogs:
             return
+        tracklist = release_details.get("tracklist") or []
+        tracks = [t for t in tracklist if t.get("type_", "track") in (None, "", "track")]
+        if not tracks:
+            for pending in pending_results:
+                self.discogs.apply_release_details(pending.meta, release_details, allow_overwrite=True)
+                score = pending.meta.match_confidence or 0.4
+                pending.meta.match_confidence = score
+                pending.result = LookupResult(pending.meta, score=score)
+                pending.matched = True
+            return
+
+        assignment_scores: list[list[float]] = []
         for pending in pending_results:
-            self.discogs.apply_release_details(pending.meta, release_details, allow_overwrite=True)
-            score = pending.meta.match_confidence or 0.4
-            pending.meta.match_confidence = score
-            pending.result = LookupResult(pending.meta, score=score)
+            meta = pending.meta
+            if not meta.duration_seconds:
+                duration = self.musicbrainz._probe_duration(meta.path)
+                if duration:
+                    meta.duration_seconds = duration
+            guess = guess_metadata_from_path(meta.path)
+            track_number = meta.extra.get("TRACKNUMBER")
+            if not isinstance(track_number, int):
+                track_number = guess.track_number
+            title = meta.title or guess.title or meta.path.stem
+            title_norm = normalize_title_for_match(title) or title
+            row: list[float] = []
+            for track in tracks:
+                score = 0.0
+                position = track.get("position")
+                pos_num = None
+                if isinstance(position, str):
+                    digits = "".join(ch for ch in position if ch.isdigit())
+                    pos_num = int(digits) if digits else None
+                if isinstance(track_number, int) and pos_num:
+                    diff = abs(pos_num - track_number)
+                    if diff == 0:
+                        score += 0.6
+                    elif diff == 1:
+                        score += 0.25
+                    elif diff == 2:
+                        score += 0.1
+                if track.get("title"):
+                    ratio = title_similarity(title_norm, track.get("title")) or 0.0
+                    score += 0.3 * ratio
+                dur = parse_discogs_duration(track.get("duration"))
+                dur_ratio = duration_similarity(meta.duration_seconds, dur)
+                if dur_ratio is not None:
+                    score += 0.1 * dur_ratio
+                row.append(max(0.0, min(1.0, score)))
+            assignment_scores.append(row)
+
+        assignment = best_assignment_max_score(assignment_scores, dummy_score=0.55)
+        for pending_index, track_index in enumerate(assignment):
+            pending = pending_results[pending_index]
+            if track_index is None or track_index >= len(tracks):
+                continue
+            score = assignment_scores[pending_index][track_index]
+            if score < 0.58:
+                continue
+            track = tracks[track_index]
+            self.discogs.apply_release_details_matched(pending.meta, release_details, track, allow_overwrite=True)
+            position = track.get("position")
+            if "TRACKNUMBER" not in pending.meta.extra and isinstance(position, str):
+                digits = "".join(ch for ch in position if ch.isdigit())
+                if digits.isdigit():
+                    pending.meta.extra["TRACKNUMBER"] = int(digits)
+            pending.meta.match_confidence = max(pending.meta.match_confidence or 0.0, 0.35 + score * 0.3)
+            pending.result = LookupResult(pending.meta, score=max(pending.result.score if pending.result else 0.0, 0.35 + score * 0.3))
             pending.matched = True
 
     def _apply_musicbrainz_release_selection(
@@ -1616,6 +1045,7 @@ class AudioMetaDaemon:
         if force:
             release_data.claimed.clear()
         applied = False
+        to_assign: list[PendingResult] = []
         for pending in pending_results:
             if pending.matched and not force:
                 applied = True
@@ -1626,15 +1056,66 @@ class AudioMetaDaemon:
                 duration = self.musicbrainz._probe_duration(pending.meta.path)
                 if duration:
                     pending.meta.duration_seconds = duration
-            guess = guess_metadata_from_path(pending.meta.path)
-            release_match = self.musicbrainz.release_tracker.match(directory, guess, pending.meta.duration_seconds)
-            if not release_match:
-                continue
-            lookup = self.musicbrainz.apply_release_match(pending.meta, release_match)
-            if lookup:
-                pending.result = lookup
-                pending.matched = True
-                applied = True
+            to_assign.append(pending)
+
+        if to_assign:
+            assignment_scores: list[list[float]] = []
+            tracks = list(release_data.tracks or [])
+            for pending in to_assign:
+                meta = pending.meta
+                guess = guess_metadata_from_path(meta.path)
+                track_number = meta.extra.get("TRACKNUMBER")
+                disc_number = meta.extra.get("DISCNUMBER")
+                title = meta.title or guess.title or meta.path.stem
+                title_norm = normalize_title_for_match(title)
+                row: list[float] = []
+                for track in tracks:
+                    if meta.musicbrainz_track_id and track.recording_id and meta.musicbrainz_track_id == track.recording_id:
+                        row.append(1.0)
+                        continue
+                    score = 0.0
+                    if isinstance(track_number, int) and track.number:
+                        diff = abs(track.number - track_number)
+                        if diff == 0:
+                            score += 0.62
+                        elif diff == 1:
+                            score += 0.28
+                        elif diff == 2:
+                            score += 0.12
+                    if isinstance(disc_number, int) and track.disc_number:
+                        if disc_number == track.disc_number:
+                            score += 0.08
+                        else:
+                            score -= 0.04
+                    if title_norm and track.title:
+                        ratio = title_similarity(title_norm, track.title) or 0.0
+                        score += 0.25 * ratio
+                    elif title and track.title:
+                        ratio = title_similarity(title, track.title) or 0.0
+                        score += 0.2 * ratio
+                    dur_ratio = duration_similarity(meta.duration_seconds, track.duration_seconds)
+                    if dur_ratio is not None:
+                        score += 0.05 * dur_ratio
+                    row.append(max(0.0, min(1.0, score)))
+                assignment_scores.append(row)
+
+            assignment = best_assignment_max_score(assignment_scores, dummy_score=0.62)
+            for pending_index, track_index in enumerate(assignment):
+                if track_index is None:
+                    continue
+                if track_index >= len(tracks):
+                    continue
+                score = assignment_scores[pending_index][track_index]
+                if score < 0.63:
+                    continue
+                track = tracks[track_index]
+                release_match = ReleaseMatch(release=release_data, track=track, confidence=score)
+                lookup = self.musicbrainz.apply_release_match(to_assign[pending_index].meta, release_match)
+                if lookup:
+                    to_assign[pending_index].result = lookup
+                    to_assign[pending_index].matched = True
+                    applied = True
+                    release_data.mark_claimed(track.recording_id)
         if applied:
             artist = release_data.album_artist if release_data else None
             album = release_data.album_title if release_data else None
@@ -1930,25 +1411,6 @@ class AudioMetaDaemon:
             return "musicbrainz", value
         return None
 
-    def _directory_already_processed(self, batch: DirectoryBatch) -> bool:
-        if not batch.files:
-            return False
-        for file_path in batch.files:
-            stat = self._safe_stat(file_path)
-            if not stat:
-                return False
-            cached = self.cache.get_processed_file(file_path)
-            if not cached:
-                return False
-            cached_mtime, cached_size, organized_flag = cached
-            if (
-                cached_mtime != stat.st_mtime_ns
-                or cached_size != stat.st_size
-                or not organized_flag
-            ):
-                return False
-        return True
-
     def _calculate_directory_hash(self, directory: Path, files: list[Path]) -> Optional[str]:
         if not files:
             return None
@@ -2055,64 +1517,21 @@ class AudioMetaDaemon:
         return [str(path) for path in paths]
 
     def _path_based_hints(self, directory: Path) -> tuple[Optional[str], Optional[str]]:
-        names: list[str] = []
-        current = directory
-        for _ in range(3):
-            if not current or not current.name:
-                break
-            names.append(current.name)
-            if current.parent == current:
-                break
-            current = current.parent
-        album = next((name for name in names if name and not self._looks_like_disc_folder(name)), names[0] if names else None)
-        artist = None
-        if len(names) > 1:
-            for name in names[1:]:
-                if name and not self._looks_like_disc_folder(name):
-                    artist = name
-                    break
-        return artist, album
+        return directory_identity_logic.path_based_hints(directory)
 
     def _hint_cache_key(self, artist: Optional[str], album: Optional[str]) -> Optional[str]:
-        normalized_album = self._normalize_hint_value(album)
-        if not normalized_album:
-            return None
-        normalized_artist = self._normalize_hint_value(artist) or "unknown"
-        return f"hint://{normalized_artist}|{normalized_album}"
+        return directory_identity_logic.hint_cache_key(artist, album)
 
     @staticmethod
     def _normalize_hint_value(value: Optional[str]) -> str:
-        if not value:
-            return ""
-        cleaned = unicodedata.normalize("NFKD", value)
-        cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
-        cleaned = cleaned.lower()
-        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
-        return cleaned.strip()
+        return directory_identity_logic.normalize_hint_value(value)
 
     def _token_overlap_ratio(self, expected: Optional[str], candidate: Optional[str]) -> float:
-        expected_tokens = self._tokenize(expected)
-        if not expected_tokens:
-            return 0.0
-        candidate_tokens = set(self._tokenize(candidate))
-        if not candidate_tokens:
-            return 0.0
-        overlap = sum(1 for token in expected_tokens if token in candidate_tokens)
-        return overlap / len(expected_tokens)
+        return directory_identity_logic.token_overlap_ratio(expected, candidate)
 
     @staticmethod
     def _tokenize(value: Optional[str]) -> list[str]:
-        if not value:
-            return []
-        if isinstance(value, (list, tuple)):
-            value = " ".join(str(part) for part in value if part)
-        else:
-            value = str(value)
-        cleaned = unicodedata.normalize("NFKD", value)
-        cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
-        cleaned = cleaned.lower()
-        cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
-        return [token for token in cleaned.split() if token]
+        return directory_identity_logic.tokenize(value)
 
     def _display_path(self, path: Path | str) -> str:
         try:
@@ -2128,58 +1547,17 @@ class AudioMetaDaemon:
         return str(path)
 
     def _prepare_album_batch(self, batch: DirectoryBatch, force_prompt: bool = False) -> Optional[DirectoryBatch]:
-        directory = batch.directory
-        album_root = self._album_root(directory)
-        try:
-            resolved_root = album_root.resolve()
-        except FileNotFoundError:
-            resolved_root = album_root
-        if not force_prompt and resolved_root in self._processed_albums:
-            logger.debug("Album %s already processed; skipping %s", album_root, directory)
-            return None
-        self._processed_albums.add(resolved_root)
-        disc_dirs = self._disc_directories(album_root)
-        files: list[Path] = []
-        seen: set[Path] = set()
-
-        def _add_files(paths: list[Path]) -> None:
-            for path in paths:
-                if path not in seen:
-                    files.append(path)
-                    seen.add(path)
-
-        if album_root == directory:
-            _add_files(batch.files)
-        else:
-            root_batch = self.scanner.collect_directory(album_root)
-            if root_batch:
-                _add_files(root_batch.files)
-        for disc_dir in disc_dirs:
-            if disc_dir == directory:
-                _add_files(batch.files)
-            else:
-                sub_batch = self.scanner.collect_directory(disc_dir)
-                if sub_batch:
-                    _add_files(sub_batch.files)
-        if not files:
-            return None
-        return DirectoryBatch(directory=album_root, files=files)
+        batcher = AlbumBatcher(scanner=self.scanner, processed_albums=self._processed_albums)
+        result = batcher.prepare_album_batch(batch, force_prompt=force_prompt)
+        if result.already_processed and not force_prompt:
+            logger.debug("Album %s already processed; skipping %s", result.album_root, batch.directory)
+        return result.batch
 
     def _album_root(self, directory: Path) -> Path:
-        if self._looks_like_disc_folder(directory.name) and directory.parent != directory:
-            return directory.parent
-        return directory
+        return AlbumBatcher.album_root(directory)
 
     def _disc_directories(self, album_root: Path) -> list[Path]:
-        discs: list[Path] = []
-        try:
-            entries = list(album_root.iterdir())
-        except (FileNotFoundError, NotADirectoryError):
-            return discs
-        for entry in entries:
-            if entry.is_dir() and self._looks_like_disc_folder(entry.name):
-                discs.append(entry)
-        return sorted(discs)
+        return AlbumBatcher.disc_directories(album_root)
 
     def _persist_directory_release(
         self,
@@ -2197,7 +1575,7 @@ class AudioMetaDaemon:
 
     @staticmethod
     def _looks_like_disc_folder(name: str) -> bool:
-        return bool(re.search(r"(?:^|\s)(disc|cd|disk)\s*\d", name, re.IGNORECASE))
+        return directory_identity_logic.looks_like_disc_folder(name)
 
     @staticmethod
     def _release_key(provider: str, release_id: str) -> str:

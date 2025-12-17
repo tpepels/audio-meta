@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import errno
 import logging
-import os
-import shutil
 from pathlib import Path
 from typing import Optional
 
-from .audit import LibraryAuditor
+from .app import AudioMetaApp
 from .cache import MetadataCache
+from .commands import audit_events as cmd_audit_events
+from .commands import audit_run as cmd_audit_run
+from .commands import cleanup as cmd_cleanup
+from .commands import doctor as cmd_doctor
+from .commands import rollback as cmd_rollback
+from .commands import singletons as cmd_singletons
 from .config import Settings, find_config
 from .daemon import AudioMetaDaemon
 from .providers.validation import validate_providers
@@ -109,6 +112,19 @@ def main() -> None:
         action="store_true",
         help="Automatically move files whose tags indicate a different artist/album",
     )
+    events_parser = subparsers.add_parser("audit-events", help="Show recent pipeline audit events")
+    events_parser.add_argument("--limit", type=int, default=50, help="Number of events to show (max 1000)")
+    events_parser.add_argument("--event", default=None, help="Filter by event type (e.g. scan_complete)")
+    events_parser.add_argument(
+        "--since",
+        default=None,
+        help="Only show events after this id or timestamp (YYYY-MM-DD HH:MM:SS)",
+    )
+    events_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout",
+    )
     cleanup_parser = subparsers.add_parser(
         "cleanup", help="Remove directories that only contain non-audio files"
     )
@@ -120,6 +136,12 @@ def main() -> None:
     subparsers.add_parser(
         "singletons",
         help="Interactively review directories that contain a single audio file",
+    )
+    doctor_parser = subparsers.add_parser("doctor", help="Run basic config/cache/pipeline checks")
+    doctor_parser.add_argument(
+        "--providers",
+        action="store_true",
+        help="Also validate providers with network calls",
     )
 
     args = parser.parse_args()
@@ -157,7 +179,11 @@ def main() -> None:
         if args.command is None:
             return
     if args.rollback_moves:
-        rollback_moves(settings)
+        cache = MetadataCache(settings.daemon.cache_path)
+        try:
+            cmd_rollback.run(cache)
+        finally:
+            cache.close()
         return
     requires_providers = args.command in {"scan", "daemon", "run"}
     if requires_providers:
@@ -166,10 +192,13 @@ def main() -> None:
         cache = MetadataCache(settings.daemon.cache_path)
         cache.clear_moves()
         cache.close()
+    app: AudioMetaApp | None = None
     daemon: AudioMetaDaemon | None = None
-    if args.command in {"scan", "daemon", "run"}:
-        daemon = AudioMetaDaemon(
-            settings,
+    uses_app = args.command in {"scan", "daemon", "run", "audit", "audit-events", "singletons", "doctor"}
+    if uses_app:
+        app = AudioMetaApp.create(settings)
+    if args.command in {"scan", "daemon", "run"} and app:
+        daemon = app.get_daemon(
             dry_run_output=args.dry_run_output,
             interactive=(args.command in {"scan", "run"}),
             release_cache_enabled=not args.disable_release_cache,
@@ -183,281 +212,36 @@ def main() -> None:
                 asyncio.run(daemon.run_daemon())
             case "run":
                 asyncio.run(daemon.run_scan())
-                audit_library(settings, fix=True)
+                cmd_audit_run.run(app.get_auditor(), fix=True)
             case "audit":
-                audit_library(settings, fix=getattr(args, "fix", False))
+                cmd_audit_run.run(app.get_auditor(), fix=getattr(args, "fix", False))
+            case "audit-events":
+                cmd_audit_events.run(
+                    app.cache,
+                    limit=getattr(args, "limit", 50),
+                    event=getattr(args, "event", None),
+                    since=getattr(args, "since", None),
+                    json_output=getattr(args, "json", False),
+                )
             case "cleanup":
-                cleanup_directories(settings, dry_run=getattr(args, "dry_run", False))
+                cmd_cleanup.run(settings, dry_run=getattr(args, "dry_run", False))
             case "singletons":
-                review_singletons(settings)
+                cmd_singletons.run(app.get_auditor())
+            case "doctor":
+                report = cmd_doctor.run(settings, validate_providers_online=getattr(args, "providers", False))
+                for line in report.checks:
+                    print(line)
+                if not report.ok:
+                    raise SystemExit(1)
             case _:
                 parser.error("Unknown command")
     finally:
         if daemon:
             daemon.report_skips()
+        if app:
+            app.close()
         if warn_buffer.records:
             print("\n\033[33mWarnings/Errors summary:\033[0m")
             for line in warn_buffer.records:
                 print(f" - {line}")
             print(f"\nFull warning log: {warn_log_path}")
-
-
-def rollback_moves(settings: Settings) -> None:
-    cache = MetadataCache(settings.daemon.cache_path)
-    moves = cache.list_moves()
-    if not moves:
-        print("No recorded moves to rollback.")
-        cache.clear_directory_releases()
-        cache.close()
-        return
-    print(f"Rolling back {len(moves)} recorded move(s)...")
-    restored = 0
-    failed = 0
-    for source_str, target_str in moves:
-        source_entry = source_str
-        source = Path(source_str)
-        target = Path(target_str)
-        target_exists = _path_exists(target)
-        if target_exists is None:
-            logging.warning("Cannot restore %s -> %s: parent missing", target, source)
-            cache.delete_move(source_entry)
-            failed += 1
-            continue
-        if not target_exists:
-            logging.warning("Cannot restore %s -> %s: target missing", target, source)
-            cache.delete_move(source_entry)
-            failed += 1
-            continue
-        fitted_source = _fit_destination_path(source)
-        if fitted_source != source:
-            logging.info("Truncating restore path %s -> %s", source.name, fitted_source.name)
-            source = fitted_source
-        source.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            try:
-                _safe_rename(target, source)
-            except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    raise
-                shutil.move(str(target), str(source))
-            stat = source.stat()
-            cache.set_processed_file(source, stat.st_mtime_ns, stat.st_size, organized=False)
-            cache.delete_move(source_entry)
-            restored += 1
-            logging.info("Restored %s -> %s", target, source)
-        except Exception as exc:  # pragma: no cover - best effort
-            logging.error("Failed to restore %s -> %s: %s", target, source, exc)
-            failed += 1
-    cache.clear_directory_releases()
-    cache.close()
-    print(f"Rollback complete: {restored} restored, {failed} failed.")
-
-
-def audit_library(settings: Settings, fix: bool = False) -> None:
-    """Run the tag-based relocation audit, optionally auto-fixing misplaced files."""
-    cache = MetadataCache(settings.daemon.cache_path)
-    try:
-        LibraryAuditor(settings, cache=cache).run(fix=fix)
-    finally:
-        cache.close()
-
-
-def cleanup_directories(settings: Settings, dry_run: bool = False) -> None:
-    audio_exts = {ext.lower() for ext in settings.library.include_extensions}
-    roots = [root.resolve() for root in settings.library.roots]
-    removed_dirs = 0
-    removed_files = 0
-    for root in roots:
-        for dirpath, dirnames, filenames in os.walk(root, topdown=False):
-            path = Path(dirpath)
-            if path in roots:
-                continue
-            if _directory_has_audio_files(path, audio_exts):
-                continue
-            if dry_run:
-                print(f"[dry-run] Would remove {path} ({len(filenames)} files)")
-                continue
-            removed = _remove_tree(path)
-            if removed is None:
-                continue
-            removed_dirs += 1
-            removed_files += removed
-            print(f"Removed {path}")
-    suffix = " (dry-run)" if dry_run else ""
-    print(
-        f"Cleanup complete{suffix}: removed {removed_dirs} directories containing only non-audio files."
-    )
-    if not dry_run:
-        print(f"Deleted {removed_files} files with non-audio content.")
-
-
-def review_singletons(settings: Settings) -> None:
-    cache = MetadataCache(settings.daemon.cache_path)
-    try:
-        auditor = LibraryAuditor(settings, cache=cache)
-        entries = auditor.collect_singletons()
-        entries = [entry for entry in entries if entry.file_path.exists()]
-        if not entries:
-            print("No single-file directories detected.")
-            return
-        total = len(entries)
-        for idx, entry in enumerate(entries, 1):
-            directory_label = auditor.display_path(entry.directory)
-            print(f"\n[{idx}/{total}] {directory_label}")
-            print(f"    File: {entry.file_path.name}")
-            print(f"    Artist: {entry.meta.artist or '<unknown>'}")
-            print(f"    Album: {entry.meta.album or '<unknown>'}")
-            if entry.meta.composer:
-                print(f"    Composer: {entry.meta.composer}")
-            print(f"    Title: {entry.meta.title or '<unknown>'}")
-            if entry.release_id:
-                print(f"    Release ID: {entry.release_id}")
-            if entry.target:
-                target_label = auditor.display_path(entry.target.parent)
-                print(f"    Suggested target: {target_label}/{entry.target.name}")
-            elif entry.release_home:
-                home_label = auditor.display_path(entry.release_home)
-                print(f"    Release home: {home_label}/ (already contains other tracks)")
-            elif entry.canonical_path:
-                canonical_label = auditor.display_path(entry.canonical_path.parent)
-                print(f"    Canonical path: {canonical_label}/{entry.canonical_path.name}")
-            else:
-                print("    Suggested target: (already in place or unknown)")
-            while True:
-                choice = input("Action [k]eep/[m]ove/[d]elete/[i]gnore/[q]uit: ").strip().lower()
-                if choice in {"", "k"}:
-                    break
-                if choice == "q":
-                    print("Stopping singleton review.")
-                    return
-                if choice == "m":
-                    destination = entry.target
-                    if not destination and entry.release_home:
-                        destination = entry.release_home / entry.file_path.name
-                    if not destination:
-                        print("No suggested destination; keeping file in place.")
-                        break
-                    auditor.organizer.move(entry.meta, destination, dry_run=False)
-                    auditor.organizer.cleanup_source_directory(entry.directory)
-                    entry.file_path = entry.meta.path
-                    entry.directory = entry.meta.path.parent
-                    print("Moved to", auditor.display_path(entry.meta.path.parent))
-                    break
-                if choice == "d":
-                    try:
-                        entry.file_path.unlink()
-                        try:
-                            entry.directory.rmdir()
-                        except OSError:
-                            pass
-                        print("Deleted file (and directory if empty).")
-                    except FileNotFoundError:
-                        print("File already missing.")
-                    break
-                if choice == "i":
-                    cache.ignore_directory(entry.directory, "user ignored singleton")
-                    print("Directory will be ignored in future single-file audits.")
-                    break
-                print("Invalid choice. Use k/m/d/i/q.")
-    finally:
-        cache.close()
-
-
-ELLIPSIS = "…"
-MAX_BASENAME_BYTES = 255
-
-
-def _directory_has_audio_files(path: Path, extensions: set[str]) -> bool:
-    if not extensions:
-        return True
-    for root, _, files in os.walk(path):
-        for name in files:
-            if Path(name).suffix.lower() in extensions:
-                return True
-    return False
-
-
-def _path_exists(path: Path) -> Optional[bool]:
-    try:
-        path.stat()
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        if exc.errno != errno.ENAMETOOLONG:
-            raise
-        parent = path.parent
-        try:
-            with os.scandir(parent) as it:
-                for entry in it:
-                    if entry.name == path.name:
-                        return True
-        except FileNotFoundError:
-            return None
-        return False
-
-
-def _fit_destination_path(path: Path) -> Path:
-    name_bytes = path.name.encode("utf-8")
-    if len(name_bytes) <= MAX_BASENAME_BYTES:
-        return path
-    suffix_bytes = path.suffix.encode("utf-8")
-    ellipsis_bytes = ELLIPSIS.encode("utf-8")
-    allowed = MAX_BASENAME_BYTES - len(suffix_bytes) - len(ellipsis_bytes)
-    if allowed < 0:
-        allowed = 0
-    stem = path.stem or "file"
-    truncated = stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or "file"
-    candidate = path.with_name(f"{truncated}{ELLIPSIS}{path.suffix}")
-    counter = 1
-    while candidate.exists():
-        extra = f"_{counter}"
-        extra_bytes = extra.encode("utf-8")
-        allowed = MAX_BASENAME_BYTES - len(suffix_bytes) - len(ellipsis_bytes) - len(extra_bytes)
-        allowed = max(0, allowed)
-        truncated = stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or f"file{counter}"
-        candidate = path.with_name(f"{truncated}{extra}{ELLIPSIS}{path.suffix}")
-        counter += 1
-    return candidate
-
-
-def _safe_rename(src: Path, dst: Path) -> None:
-    try:
-        src.rename(dst)
-        return
-    except OSError as exc:
-        if exc.errno != errno.ENAMETOOLONG:
-            raise
-    src_dir_fd = os.open(src.parent, os.O_RDONLY)
-    try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst_dir_fd = os.open(dst.parent, os.O_RDONLY)
-        try:
-            os.rename(src.name, dst.name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-        finally:
-            os.close(dst_dir_fd)
-    finally:
-        os.close(src_dir_fd)
-
-
-def _remove_tree(path: Path) -> Optional[int]:
-    count = 0
-    try:
-        for root, dirs, files in os.walk(path, topdown=False):
-            root_path = Path(root)
-            for name in files:
-                try:
-                    (root_path / name).unlink()
-                    count += 1
-                except FileNotFoundError:
-                    continue
-            for name in dirs:
-                try:
-                    (root_path / name).rmdir()
-                except OSError:
-                    return None
-        path.rmdir()
-        return count
-    except OSError as exc:
-        logging.warning("Failed to remove %s: %s", path, exc)
-        return None

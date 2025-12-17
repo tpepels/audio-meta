@@ -132,9 +132,23 @@ class DiscogsClient:
         tags = self._read_basic_tags(meta.path)
         artist = tags.get("artist") or guess.artist
         title = tags.get("title") or guess.title or meta.title
-        track_number = guess.track_number
+        extra_number = meta.extra.get("TRACKNUMBER")
+        if isinstance(extra_number, int):
+            track_number = extra_number
+        else:
+            track_number = guess.track_number
         duration = meta.duration_seconds or self._probe_duration(meta.path)
         track = self._match_track(release.get("tracklist", []), title, track_number, duration)
+        self._apply_release(meta, release, track, allow_overwrite)
+        meta.extra.setdefault("DISCOGS_RELEASE_ID", str(release.get("id")))
+
+    def apply_release_details_matched(
+        self,
+        meta: TrackMetadata,
+        release: dict,
+        track: Optional[dict],
+        allow_overwrite: bool = True,
+    ) -> None:
         self._apply_release(meta, release, track, allow_overwrite)
         meta.extra.setdefault("DISCOGS_RELEASE_ID", str(release.get("id")))
 

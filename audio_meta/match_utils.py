@@ -14,11 +14,28 @@ def normalize_match_text(value: str) -> str:
     return cleaned.strip()
 
 
+def normalize_title_for_match(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    cleaned = unicodedata.normalize("NFKD", value)
+    cleaned = cleaned.replace("&", " and ")
+    cleaned = cleaned.replace("’", "'").replace("`", "'")
+    cleaned = cleaned.encode("ascii", "ignore").decode("ascii")
+    cleaned = cleaned.lower()
+    cleaned = re.sub(r"^\s*\d{1,3}\s*[-–—_.]+\s*", "", cleaned)
+    cleaned = re.sub(r"^\s*\d{1,3}\s+", "", cleaned)
+    cleaned = re.sub(r"\s*[\(\[]\s*(remaster(?:ed)?|mono|stereo|live|bonus track|bonus|deluxe|expanded|version)\s*[\)\]]\s*$", "", cleaned)
+    cleaned = re.sub(r"\s*-\s*(remaster(?:ed)?|mono|stereo|live|bonus track|bonus|deluxe|expanded|version)\s*$", "", cleaned)
+    cleaned = re.sub(r"[^\w\s]+", " ", cleaned, flags=re.UNICODE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
 def title_similarity(a: Optional[str], b: Optional[str]) -> Optional[float]:
     if not a or not b:
         return None
-    norm_a = normalize_match_text(a)
-    norm_b = normalize_match_text(b)
+    norm_a = normalize_title_for_match(a) or normalize_match_text(a)
+    norm_b = normalize_title_for_match(b) or normalize_match_text(b)
     if not norm_a or not norm_b:
         return None
     return SequenceMatcher(None, norm_a, norm_b).ratio()
@@ -61,4 +78,3 @@ def parse_discogs_duration(value: Optional[str]) -> Optional[int]:
         return minutes * 60 + seconds
     except (ValueError, TypeError):
         return None
-

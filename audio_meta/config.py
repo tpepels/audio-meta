@@ -34,6 +34,8 @@ class ProviderSettings(BaseModel):
 class DaemonSettings(BaseModel):
     worker_concurrency: int = 4
     cache_path: Path = Path("./cache/cache.sqlite3")
+    pipeline_disable: List[str] = Field(default_factory=list)
+    pipeline_order: dict[str, List[str]] = Field(default_factory=dict)
 
     @field_validator("cache_path", mode="before")
     @classmethod
