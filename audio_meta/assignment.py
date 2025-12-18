@@ -25,17 +25,17 @@ def hungarian_min_cost(cost: List[List[float]]) -> List[Optional[int]]:
 
     a: List[List[float]] = []
     for r in range(n):
-        row: List[float] = []
+        padded_row: List[float] = []
         if r < n_rows:
             src = cost[r]
             for c in range(n):
                 if c < len(src):
-                    row.append(float(src[c]))
+                    padded_row.append(float(src[c]))
                 else:
-                    row.append(pad_value)
+                    padded_row.append(pad_value)
         else:
-            row = [pad_value] * n
-        a.append(row)
+            padded_row = [pad_value] * n
+        a.append(padded_row)
 
     u = [0.0] * (n + 1)
     v = [0.0] * (n + 1)
@@ -78,7 +78,7 @@ def hungarian_min_cost(cost: List[List[float]]) -> List[Optional[int]]:
             if j0 == 0:
                 break
 
-    assignment = [None] * n_rows
+    assignment: List[Optional[int]] = [None] * n_rows
     for j in range(1, n + 1):
         i = p[j]
         if 1 <= i <= n_rows and 1 <= j <= n_cols:
@@ -101,9 +101,9 @@ def best_assignment_max_score(
     for r in range(n_rows):
         row_scores = score[r]
         row_cost: List[float] = []
-        for c in range(n):
-            if c < len(row_scores):
-                row_cost.append(max_score - float(row_scores[c]))
+        for col in range(n):
+            if col < len(row_scores):
+                row_cost.append(max_score - float(row_scores[col]))
             else:
                 row_cost.append(max_score - float(dummy_score))
         cost.append(row_cost)
@@ -112,10 +112,11 @@ def best_assignment_max_score(
 
     raw = hungarian_min_cost(cost)
     cleaned: List[Optional[int]] = []
-    for r, c in enumerate(raw):
-        if c is None or c >= n_cols:
+    for _r, c in enumerate(raw):
+        if c is None:
+            cleaned.append(None)
+        elif c >= n_cols:
             cleaned.append(None)
         else:
             cleaned.append(c)
     return cleaned
-

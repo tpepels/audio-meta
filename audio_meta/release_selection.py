@@ -43,6 +43,7 @@ def decide_release(
     forced_release_score: float,
     force_prompt: bool,
     release_summary_printed: bool,
+    require_confirmation: bool = False,
 ) -> ReleaseDecision:
     discogs_release_details = None
     effective_dir_year = dir_year or _infer_dir_year_from_pending_results(daemon, pending_results)
@@ -199,6 +200,55 @@ def decide_release(
                 release_summary_printed=release_summary_printed,
                 should_abort=True,
             )
+    if require_confirmation and best_release_id:
+        if daemon.defer_prompts and not force_prompt and not daemon._processing_deferred:
+            daemon._schedule_deferred_directory(directory, "suspicious_fingerprint")
+            return ReleaseDecision(
+                best_release_id=best_release_id,
+                best_score=best_score,
+                ambiguous_candidates=ambiguous_candidates,
+                coverage=coverage,
+                forced_provider=forced_provider,
+                forced_release_id=forced_release_id,
+                forced_release_score=forced_release_score,
+                discogs_release_details=discogs_release_details,
+                release_summary_printed=release_summary_printed,
+                should_abort=True,
+            )
+        if daemon.interactive:
+            candidates_for_prompt = ambiguous_candidates or [(best_release_id, best_score)]
+            selection = daemon._resolve_release_interactively(
+                directory,
+                candidates_for_prompt,
+                release_examples,
+                pending_results[0].meta if pending_results else None,
+                dir_track_count,
+                effective_dir_year,
+                discogs_details,
+            )
+            if selection is None:
+                daemon._record_skip(directory, "User skipped suspicious fingerprint match confirmation")
+                logger.warning("Skipping %s per user choice", directory)
+                return ReleaseDecision(
+                    best_release_id=best_release_id,
+                    best_score=best_score,
+                    ambiguous_candidates=ambiguous_candidates,
+                    coverage=coverage,
+                    forced_provider=forced_provider,
+                    forced_release_id=forced_release_id,
+                    forced_release_score=forced_release_score,
+                    discogs_release_details=discogs_release_details,
+                    release_summary_printed=release_summary_printed,
+                    should_abort=True,
+                )
+            provider, selection_id = selection
+            forced_provider = provider
+            forced_release_id = selection_id
+            forced_release_score = 1.0
+            best_release_id = daemon._release_key(provider, selection_id)
+            best_score = release_scores.get(best_release_id, best_score)
+            ambiguous_candidates = [(best_release_id, best_score)]
+
     if best_release_id and len(ambiguous_candidates) > 1:
         if daemon.defer_prompts and not force_prompt and not daemon._processing_deferred:
             daemon._schedule_deferred_directory(directory, "ambiguous_release")

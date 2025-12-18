@@ -37,6 +37,7 @@ from .tagging import TagWriter
 from .cache import MetadataCache
 from .services import AudioMetaServices
 from . import release_home as release_home_logic
+from .directory_identity import normalize_hint_value
 from . import deferred as deferred_logic
 from . import release_scoring as release_scoring_logic
 from . import directory_identity as directory_identity_logic
@@ -117,8 +118,8 @@ class AudioMetaDaemon:
         logger.debug("Starting daemon")
         for batch in self.scanner.iter_directories():
             await self.queue.put(batch)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._bootstrap_watchdog)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._bootstrap_watchdog, loop)
         workers = self._start_workers()
         try:
             while True:
@@ -131,8 +132,8 @@ class AudioMetaDaemon:
                 self.observer.join()
             await self._stop_workers(workers)
 
-    def _bootstrap_watchdog(self) -> None:
-        handler = WatchHandler(self.queue, self.settings.library.include_extensions, self.scanner)
+    def _bootstrap_watchdog(self, loop: asyncio.AbstractEventLoop) -> None:
+        handler = WatchHandler(self.queue, self.settings.library.include_extensions, self.scanner, loop=loop)
         observer = Observer()
         for root in self.settings.library.roots:
             observer.schedule(handler, str(root), recursive=True)
@@ -155,7 +156,7 @@ class AudioMetaDaemon:
                 if self.cache.is_directory_ignored(batch.directory):
                     logger.info("Skipping ignored directory %s", self._display_path(batch.directory))
                 else:
-                    await asyncio.get_event_loop().run_in_executor(None, self._process_directory, batch)
+                    await asyncio.get_running_loop().run_in_executor(None, self._process_directory, batch)
             except Exception:  # pragma: no cover - logged and ignored
                 logger.exception("Worker %s failed to process %s", worker_id, batch.directory)
             finally:
@@ -180,6 +181,7 @@ class AudioMetaDaemon:
         if self.pipeline.should_skip_directory(dir_ctx):
             return
         pending_results: list[PendingResult] = []
+        pre_enrich_metas: list[TrackMetadata] = []
         release_scores: dict[str, float] = {}
         release_examples: dict[str, ReleaseExample] = {}
         discogs_details: dict[str, dict] = {}
@@ -208,6 +210,36 @@ class AudioMetaDaemon:
                 TrackSkipContext(daemon=self, directory=batch.directory, file_path=file_path, directory_ctx=dir_ctx)
             ):
                 continue
+            pre_enrich_metas.append(
+                TrackMetadata(
+                    path=meta.path,
+                    title=meta.title,
+                    album=meta.album,
+                    artist=meta.artist,
+                    album_artist=meta.album_artist,
+                    composer=meta.composer,
+                    performers=list(meta.performers),
+                    conductor=meta.conductor,
+                    genre=meta.genre,
+                    duration_seconds=meta.duration_seconds,
+                )
+            )
+            snapshot = {
+                "title": meta.title,
+                "album": meta.album,
+                "artist": meta.artist,
+                "album_artist": meta.album_artist,
+                "composer": meta.composer,
+                "work": meta.work,
+                "movement": meta.movement,
+                "genre": meta.genre,
+                "performers": list(meta.performers),
+                "conductor": meta.conductor,
+                "musicbrainz_track_id": meta.musicbrainz_track_id,
+                "musicbrainz_release_id": meta.musicbrainz_release_id,
+                "match_confidence": meta.match_confidence,
+                "extra": dict(meta.extra),
+            }
             result = self.pipeline.enrich_track(
                 TrackEnrichmentContext(
                     daemon=self,
@@ -216,6 +248,31 @@ class AudioMetaDaemon:
                     existing_tags=dict(existing_tags),
                 )
             )
+            if result and meta.extra.get("MATCH_SOURCE") == "acoustid":
+                if self._fingerprint_conflicts_with_tags(existing_tags, meta):
+                    dir_ctx.require_release_confirmation = True
+                    dir_ctx.diagnostics.setdefault("fingerprint_conflicts", []).append(str(meta.path))
+                    action = getattr(self.settings.daemon, "fingerprint_mismatch_action", "defer") or "defer"
+                    if action == "ignore":
+                        meta.title = snapshot["title"]
+                        meta.album = snapshot["album"]
+                        meta.artist = snapshot["artist"]
+                        meta.album_artist = snapshot["album_artist"]
+                        meta.composer = snapshot["composer"]
+                        meta.work = snapshot["work"]
+                        meta.movement = snapshot["movement"]
+                        meta.genre = snapshot["genre"]
+                        meta.performers = list(snapshot["performers"])
+                        meta.conductor = snapshot["conductor"]
+                        meta.musicbrainz_track_id = snapshot["musicbrainz_track_id"]
+                        meta.musicbrainz_release_id = snapshot["musicbrainz_release_id"]
+                        meta.match_confidence = snapshot["match_confidence"]
+                        meta.extra = dict(snapshot["extra"])
+                        result = None
+                    else:
+                        if self.defer_prompts and not force_prompt and not self._processing_deferred:
+                            self._schedule_deferred_directory(batch.directory, "suspicious_fingerprint")
+                            return
             pending_results.append(
                 PendingResult(
                     meta=meta,
@@ -225,6 +282,19 @@ class AudioMetaDaemon:
                 )
             )
             # Release candidates are aggregated later via pipeline candidate sources.
+
+        if self._should_review_classical_credits(pre_enrich_metas):
+            action = getattr(self.settings.daemon, "classical_credits_action", "defer") or "defer"
+            if self.interactive and (force_prompt or self._processing_deferred):
+                if not self._confirm_classical_credits(batch.directory, pre_enrich_metas):
+                    self._record_skip(batch.directory, "Classical performer credits need review")
+                    return
+            elif action == "defer" and self.defer_prompts and not force_prompt and not self._processing_deferred:
+                self._schedule_deferred_directory(batch.directory, "classical_credits")
+                return
+            else:
+                self._record_skip(batch.directory, "Classical performer credits need review")
+                return
         if not release_scores and dir_ctx.discogs_release_details:
             self._apply_discogs_release_details(pending_results, dir_ctx.discogs_release_details)
 
@@ -271,6 +341,112 @@ class AudioMetaDaemon:
         for plan in planned:
             self.pipeline.apply_plan(PlanApplyContext(daemon=self, plan=plan))
         self.pipeline.complete_directory(dir_ctx, applied_plans=True)
+
+    def _fingerprint_conflicts_with_tags(self, existing_tags: dict[str, Optional[str]], meta: TrackMetadata) -> bool:
+        threshold = float(getattr(self.settings.daemon, "fingerprint_mismatch_threshold", 0.35) or 0.35)
+        tag_album = existing_tags.get("album")
+        tag_album_artist = existing_tags.get("album_artist") or existing_tags.get("albumartist")
+        if not tag_album and not tag_album_artist:
+            return False
+        album_mismatch = False
+        artist_mismatch = False
+        if tag_album and meta.album:
+            album_mismatch = self._token_overlap_ratio(tag_album, meta.album) < threshold
+        if tag_album_artist and meta.album_artist:
+            artist_mismatch = self._token_overlap_ratio(tag_album_artist, meta.album_artist) < threshold
+        if tag_album and tag_album_artist:
+            return album_mismatch and artist_mismatch
+        return album_mismatch or artist_mismatch
+
+    def _should_review_classical_credits(self, metas: list[TrackMetadata]) -> bool:
+        min_tracks = int(getattr(self.settings.daemon, "classical_credits_min_tracks", 3) or 3)
+        min_coverage = float(getattr(self.settings.daemon, "classical_credits_min_coverage", 0.6) or 0.6)
+        min_consensus = float(getattr(self.settings.daemon, "classical_credits_min_consensus", 0.7) or 0.7)
+
+        stats = self._classical_credits_stats(metas)
+        if stats["classical_tracks"] < min_tracks:
+            return False
+        if stats["coverage"] < min_coverage:
+            return True
+        if stats["hinted_tracks"] < min_tracks:
+            return True
+        if stats["consensus"] is None:
+            return True
+        return stats["consensus"] < min_consensus
+
+    def _classical_credits_stats(self, metas: list[TrackMetadata]) -> dict[str, object]:
+        classical = [m for m in metas if self.heuristics.evaluate(m).is_classical]
+        hints: list[str] = []
+        missing = 0
+        for meta in classical:
+            parts: list[str] = []
+            if meta.performers:
+                parts.extend(meta.performers)
+            if meta.album_artist and meta.album_artist != meta.composer:
+                parts.append(meta.album_artist)
+            elif meta.artist and meta.artist != meta.composer:
+                parts.append(meta.artist)
+            if meta.conductor and meta.conductor != meta.composer:
+                parts.append(meta.conductor)
+            unique: list[str] = []
+            for value in parts:
+                for token in self.heuristics._split_artist_tokens(value):
+                    if token and token not in unique and token != meta.composer:
+                        unique.append(token)
+            if not unique:
+                missing += 1
+                continue
+            hints.append("; ".join(unique))
+
+        coverage = (len(hints) / len(classical)) if classical else 1.0
+        counts: dict[str, int] = {}
+        canonical_to_display: dict[str, str] = {}
+        for hint in hints:
+            canonical = normalize_hint_value(hint)
+            if not canonical:
+                continue
+            counts[canonical] = counts.get(canonical, 0) + 1
+            canonical_to_display.setdefault(canonical, hint)
+        top = sorted(
+            ((canonical_to_display[k], v) for k, v in counts.items()),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        consensus = None
+        if hints and counts:
+            best = max(counts.values())
+            consensus = best / len(hints)
+        return {
+            "classical_tracks": len(classical),
+            "hinted_tracks": len(hints),
+            "missing_hints": missing,
+            "coverage": float(coverage),
+            "consensus": consensus,
+            "top_hints": top[:5],
+        }
+
+    def _confirm_classical_credits(self, directory: Path, metas: list[TrackMetadata]) -> bool:
+        try:
+            display = self._display_path(directory)
+            stats = self._classical_credits_stats(metas)
+            print(f"\nClassical credits check for {display}:")
+            print(f"- Classical tracks: {stats['classical_tracks']}/{len(metas)}")
+            print(f"- Performer hint coverage: {stats['coverage']:.0%} ({stats['hinted_tracks']} hinted, {stats['missing_hints']} missing)")
+            if stats["consensus"] is not None:
+                print(f"- Performer hint consensus: {float(stats['consensus']):.0%}")
+            top = list(stats["top_hints"])
+            if top:
+                print("- Top performer candidates:")
+                for hint, count in top[:3]:
+                    print(f"  - {hint} ({count})")
+            composer = next((m.composer for m in metas if m.composer), None)
+            if composer:
+                print(f"- Composer hint: {composer}")
+            print("Proceed anyway? [y/N]: ", end="")
+            choice = input().strip().lower()
+            return choice in {"y", "yes"}
+        except Exception:
+            return False
 
     def _enrich_track_default(self, meta: TrackMetadata) -> Optional[LookupResult]:
         result = self.musicbrainz.enrich(meta)
@@ -434,6 +610,16 @@ class AudioMetaDaemon:
             value = self._prepare_tag_value(tags.get(key))
             if value:
                 setattr(meta, attr, value)
+        def assign_list(attr: str, key: str) -> None:
+            if getattr(meta, attr, None):
+                return
+            value = self._prepare_tag_value(tags.get(key))
+            if not value:
+                return
+            parts = [chunk.strip() for chunk in value.replace(" / ", ";").split(";")]
+            cleaned = [p for p in parts if p]
+            if cleaned:
+                setattr(meta, attr, cleaned)
         assign("title", "title")
         assign("album", "album")
         assign("artist", "artist")
@@ -442,6 +628,8 @@ class AudioMetaDaemon:
         assign("genre", "genre")
         assign("work", "work")
         assign("movement", "movement")
+        assign("conductor", "conductor")
+        assign_list("performers", "performers")
         track_number = tags.get("tracknumber") or tags.get("track_number")
         if track_number and "TRACKNUMBER" not in meta.extra:
             cleaned = track_number.strip()
@@ -1745,7 +1933,13 @@ class AudioMetaDaemon:
         return None
 
     @staticmethod
-    def _parse_year(value: Optional[str]) -> Optional[int]:
+    def _parse_year(value: object | None) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        if not isinstance(value, str):
+            value = str(value)
         if not value:
             return None
         match = re.search(r"(19|20)\d{2}", value)

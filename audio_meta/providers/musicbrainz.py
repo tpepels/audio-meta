@@ -8,15 +8,15 @@ from typing import Callable, Dict, List, Optional, Tuple
 import difflib
 
 try:  # Optional at runtime; matching can still work without AcoustID.
-    import acoustid  # type: ignore
+    import acoustid
 except ModuleNotFoundError:  # pragma: no cover
     acoustid = None
 try:
-    import musicbrainzngs  # type: ignore
+    import musicbrainzngs
 except ModuleNotFoundError:  # pragma: no cover
     musicbrainzngs = None
 try:
-    from mutagen import File as MutagenFile  # type: ignore
+    from mutagen import File as MutagenFile
 except ModuleNotFoundError:  # pragma: no cover
     MutagenFile = None
 
@@ -305,6 +305,7 @@ class MusicBrainzClient:
             logger.warning("AcoustID lookup failed for %s: %s", meta.path, exc)
             return None
         for score, recording_id, title, artist in self._iter_acoustid(acoustic_matches):
+            before_extra = dict(meta.extra)
             recording = self._fetch_recording(recording_id, meta.path)
             if not recording:
                 continue
@@ -318,6 +319,8 @@ class MusicBrainzClient:
                 release_hint_artist=dir_release_artist,
                 album_hint=album_hint or dir_release_title,
             )
+            meta.extra = before_extra
+            meta.extra["MATCH_SOURCE"] = "acoustid"
             meta.acoustid_id = recording_id
             logger.debug("Fingerprint matched %s (recording %s score %.2f)", meta.path, recording_id, score)
             self.release_tracker.remember_release(meta.path.parent, meta.musicbrainz_release_id, score)

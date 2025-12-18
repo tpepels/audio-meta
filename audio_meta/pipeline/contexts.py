@@ -30,6 +30,7 @@ class DirectoryContext:
     forced_release_id: Optional[str] = None
     forced_release_score: float = 0.0
     release_summary_printed: bool = False
+    require_release_confirmation: bool = False
 
     best_release_key: Optional[str] = None
     discogs_release_details: Optional[dict] = None

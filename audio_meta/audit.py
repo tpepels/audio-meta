@@ -123,6 +123,18 @@ class LibraryAuditor:
             fallback = getattr(guess, attr, None)
             if fallback:
                 setattr(meta, attr, fallback)
+        def assign_list(attr: str, *keys: str) -> None:
+            if getattr(meta, attr, None):
+                return
+            for key in keys:
+                value = tags.get(key)
+                if not value:
+                    continue
+                parts = [chunk.strip() for chunk in value.replace(" / ", ";").split(";")]
+                cleaned = [p for p in parts if p]
+                if cleaned:
+                    setattr(meta, attr, cleaned)
+                    return
 
         assign("album_artist", "album_artist", "albumartist", "artist")
         assign("artist", "artist")
@@ -132,6 +144,8 @@ class LibraryAuditor:
         assign("genre", "genre")
         assign("work", "work")
         assign("movement", "movement")
+        assign("conductor", "conductor")
+        assign_list("performers", "performers", "performer")
 
         track_number = tags.get("tracknumber") or tags.get("track_number")
         if track_number:

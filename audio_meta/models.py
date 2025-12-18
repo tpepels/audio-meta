@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(slots=True)
@@ -23,7 +23,7 @@ class TrackMetadata:
     movement: Optional[str] = None
     genre: Optional[str] = None
     duration_seconds: Optional[int] = None
-    extra: Dict[str, str] = field(default_factory=dict)
+    extra: Dict[str, Any] = field(default_factory=dict)
     match_confidence: Optional[float] = None
 
     def to_record(self) -> Dict[str, object]:

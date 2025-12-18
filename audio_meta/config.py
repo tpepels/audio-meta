@@ -37,6 +37,12 @@ class DaemonSettings(BaseModel):
     pipeline_disable: List[str] = Field(default_factory=list)
     pipeline_order: dict[str, List[str]] = Field(default_factory=dict)
     debug_unmatched: bool = False
+    fingerprint_mismatch_threshold: float = 0.35
+    fingerprint_mismatch_action: str = "defer"
+    classical_credits_min_tracks: int = 3
+    classical_credits_min_coverage: float = 0.6
+    classical_credits_min_consensus: float = 0.7
+    classical_credits_action: str = "defer"
 
     @field_validator("cache_path", mode="before")
     @classmethod

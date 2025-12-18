@@ -103,10 +103,16 @@ class Organizer:
 
     def _build_filename(self, meta: TrackMetadata) -> str:
         title = meta.title
-        trackno = None
+        trackno: Optional[int] = None
         tags = meta.extra.get("TRACKNUMBER")
-        if tags:
+        if isinstance(tags, int):
             trackno = tags
+        elif isinstance(tags, str):
+            cleaned = tags.strip()
+            if "/" in cleaned:
+                cleaned = cleaned.split("/", 1)[0].strip()
+            if cleaned.isdigit():
+                trackno = int(cleaned)
         guess = guess_metadata_from_path(meta.path)
         if guess.track_number and not trackno:
             trackno = guess.track_number

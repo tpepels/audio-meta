@@ -132,6 +132,7 @@ class DiscogsClient:
         tags = self._read_basic_tags(meta.path)
         title = tags.get("title") or guess.title or meta.title
         extra_number = meta.extra.get("TRACKNUMBER")
+        track_number: Optional[int]
         if isinstance(extra_number, int):
             track_number = extra_number
         else:
@@ -193,7 +194,11 @@ class DiscogsClient:
         set_field("genre", genres[0] if genres else None)
 
     def _join_artists(self, artists: List[dict]) -> Optional[str]:
-        names = [artist.get("name") for artist in artists if artist.get("name")]
+        names: list[str] = []
+        for artist in artists:
+            name = artist.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
         return self._normalize_artist_string(", ".join(names))
 
     def _normalize_artist_string(self, value: str) -> Optional[str]:

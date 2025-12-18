@@ -72,8 +72,11 @@ def _select_entry_points(group: str) -> Iterable[Any]:
     try:
         eps = metadata.entry_points()
         if hasattr(eps, "select"):
-            return eps.select(group=group)  # type: ignore[attr-defined]
-        return eps.get(group, [])  # type: ignore[return-value]
+            return eps.select(group=group)
+        getter = getattr(eps, "get", None)
+        if callable(getter):
+            return getter(group, [])
+        return []
     except Exception:  # pragma: no cover - depends on runtime packaging
         return []
 
@@ -357,6 +360,8 @@ class ProcessingPipeline:
                 continue
             if decision is not None:
                 if decision.should_skip and decision.reason and getattr(ctx, "directory_ctx", None) is not None:
+                    if ctx.directory_ctx is None:
+                        continue
                     dir_ctx = ctx.directory_ctx
                     try:
                         dir_ctx.diagnostics.setdefault("skipped_tracks", []).append(

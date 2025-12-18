@@ -43,7 +43,47 @@ class TestClassicalHeuristics(unittest.TestCase):
         self.assertTrue(heur.adapt_metadata(meta))
         self.assertEqual(meta.composer, "Chopin")
 
+    def test_adapt_metadata_uses_album_artist_as_performer_when_composer_present(self) -> None:
+        heur = ClassicalHeuristics(
+            ClassicalSettings(
+                genre_keywords=["classical"],
+                min_duration_seconds=10,
+            )
+        )
+        meta = TrackMetadata(
+            path=Path("/music/Ravel/01.flac"),
+            genre="Classical",
+            title="Pavane",
+            album_artist="Martha Argerich",
+            artist="Maurice Ravel",
+            composer="Maurice Ravel",
+            duration_seconds=120,
+        )
+        self.assertTrue(heur.adapt_metadata(meta))
+        self.assertEqual(meta.album_artist, "Maurice Ravel")
+        self.assertIn("Martha Argerich", meta.artist or "")
+
+    def test_adapt_metadata_prefers_performers_then_conductor(self) -> None:
+        heur = ClassicalHeuristics(
+            ClassicalSettings(
+                genre_keywords=["classical"],
+                min_duration_seconds=10,
+            )
+        )
+        meta = TrackMetadata(
+            path=Path("/music/Ravel/01.flac"),
+            genre="Classical",
+            title="Concerto",
+            composer="Maurice Ravel",
+            album_artist="Maurice Ravel",
+            artist="Maurice Ravel",
+            duration_seconds=120,
+        )
+        meta.performers = ["Martha Argerich", "Berliner Philharmoniker"]
+        meta.conductor = "Claudio Abbado"
+        self.assertTrue(heur.adapt_metadata(meta))
+        self.assertEqual(meta.artist, "Martha Argerich; Berliner Philharmoniker; Claudio Abbado")
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -71,61 +71,74 @@ class TagWriter:
     def _read_tags(self, meta: TrackMetadata, ext: str) -> Optional[Dict[str, Optional[str]]]:
         try:
             if ext == ".mp3":
-                tags = ID3(meta.path)
+                id3_tags = ID3(meta.path)
                 return {
-                    "title": self._id3_text(tags, "TIT2"),
-                    "album": self._id3_text(tags, "TALB"),
-                    "artist": self._id3_text(tags, "TPE1"),
-                    "album_artist": self._id3_text(tags, "TPE2"),
-                    "composer": self._id3_text(tags, "TCOM"),
-                    "genre": self._id3_text(tags, "TCON"),
-                    "work": self._id3_text(tags, "TIT1"),
-                    "movement": self._id3_text(tags, "MVNM"),
-                    "tracknumber": self._id3_text(tags, "TRCK"),
-                    "discnumber": self._id3_text(tags, "TPOS"),
-                    "date": self._id3_text(tags, "TDRC") or self._id3_text(tags, "TYER"),
+                    "title": self._id3_text(id3_tags, "TIT2"),
+                    "album": self._id3_text(id3_tags, "TALB"),
+                    "artist": self._id3_text(id3_tags, "TPE1"),
+                    "album_artist": self._id3_text(id3_tags, "TPE2"),
+                    "conductor": self._id3_text(id3_tags, "TPE3") or self._id3_comment(id3_tags, "CONDUCTOR"),
+                    "performers": self._id3_comment(id3_tags, "PERFORMERS") or self._id3_comment(id3_tags, "PERFORMER"),
+                    "composer": self._id3_text(id3_tags, "TCOM"),
+                    "genre": self._id3_text(id3_tags, "TCON"),
+                    "work": self._id3_text(id3_tags, "TIT1"),
+                    "movement": self._id3_text(id3_tags, "MVNM"),
+                    "tracknumber": self._id3_text(id3_tags, "TRCK"),
+                    "discnumber": self._id3_text(id3_tags, "TPOS"),
+                    "date": self._id3_text(id3_tags, "TDRC") or self._id3_text(id3_tags, "TYER"),
                 }
             if ext == ".flac":
-                audio = FLAC(meta.path)
+                flac_audio = FLAC(meta.path)
+                performers = (
+                    (flac_audio.get("PERFORMERS") or flac_audio.get("PERFORMER") or [])
+                    + (flac_audio.get("SOLOIST") or [])
+                    + (flac_audio.get("ORCHESTRA") or [])
+                    + (flac_audio.get("ENSEMBLE") or [])
+                )
                 return {
-                    "title": audio.get("TITLE", [None])[0],
-                    "album": audio.get("ALBUM", [None])[0],
-                    "artist": audio.get("ARTIST", [None])[0],
-                    "album_artist": audio.get("ALBUMARTIST", [None])[0],
-                    "composer": audio.get("COMPOSER", [None])[0],
-                    "genre": audio.get("GENRE", [None])[0],
-                    "work": audio.get("WORK", [None])[0],
-                    "movement": audio.get("MOVEMENT", [None])[0],
-                    "tracknumber": audio.get("TRACKNUMBER", [None])[0],
-                    "discnumber": audio.get("DISCNUMBER", [None])[0],
-                    "date": audio.get("DATE", [None])[0] or audio.get("YEAR", [None])[0],
+                    "title": flac_audio.get("TITLE", [None])[0],
+                    "album": flac_audio.get("ALBUM", [None])[0],
+                    "artist": flac_audio.get("ARTIST", [None])[0],
+                    "album_artist": flac_audio.get("ALBUMARTIST", [None])[0],
+                    "conductor": flac_audio.get("CONDUCTOR", [None])[0],
+                    "performers": "; ".join([p for p in performers if isinstance(p, str) and p]) or None,
+                    "composer": flac_audio.get("COMPOSER", [None])[0],
+                    "genre": flac_audio.get("GENRE", [None])[0],
+                    "work": flac_audio.get("WORK", [None])[0],
+                    "movement": flac_audio.get("MOVEMENT", [None])[0],
+                    "tracknumber": flac_audio.get("TRACKNUMBER", [None])[0],
+                    "discnumber": flac_audio.get("DISCNUMBER", [None])[0],
+                    "date": flac_audio.get("DATE", [None])[0] or flac_audio.get("YEAR", [None])[0],
                 }
             if ext == ".m4a":
-                audio = MP4(meta.path)
-                track_info = audio.get("trkn")
+                mp4_audio = MP4(meta.path)
+                track_info = mp4_audio.get("trkn")
                 track_number = None
                 if track_info and isinstance(track_info, list) and track_info:
                     first = track_info[0]
                     if isinstance(first, (tuple, list)) and first:
                         track_number = str(first[0])
-                disc_info = audio.get("disk")
+                disc_info = mp4_audio.get("disk")
                 disc_number = None
                 if disc_info and isinstance(disc_info, list) and disc_info:
                     first_disc = disc_info[0]
                     if isinstance(first_disc, (tuple, list)) and first_disc:
                         disc_number = str(first_disc[0])
                 return {
-                    "title": self._mp4_text(audio, "\xa9nam"),
-                    "album": self._mp4_text(audio, "\xa9alb"),
-                    "artist": self._mp4_text(audio, "\xa9ART"),
-                    "album_artist": self._mp4_text(audio, "aART"),
-                    "composer": self._mp4_text(audio, "----:com.apple.iTunes:COMPOSER"),
-                    "genre": self._mp4_text(audio, "\xa9gen"),
-                    "work": self._mp4_text(audio, "----:com.apple.iTunes:WORK"),
-                    "movement": self._mp4_text(audio, "----:com.apple.iTunes:MOVEMENT"),
+                    "title": self._mp4_text(mp4_audio, "\xa9nam"),
+                    "album": self._mp4_text(mp4_audio, "\xa9alb"),
+                    "artist": self._mp4_text(mp4_audio, "\xa9ART"),
+                    "album_artist": self._mp4_text(mp4_audio, "aART"),
+                    "conductor": self._mp4_text(mp4_audio, "----:com.apple.iTunes:CONDUCTOR"),
+                    "performers": self._mp4_text(mp4_audio, "----:com.apple.iTunes:PERFORMERS")
+                    or self._mp4_text(mp4_audio, "----:com.apple.iTunes:PERFORMER"),
+                    "composer": self._mp4_text(mp4_audio, "----:com.apple.iTunes:COMPOSER"),
+                    "genre": self._mp4_text(mp4_audio, "\xa9gen"),
+                    "work": self._mp4_text(mp4_audio, "----:com.apple.iTunes:WORK"),
+                    "movement": self._mp4_text(mp4_audio, "----:com.apple.iTunes:MOVEMENT"),
                     "tracknumber": track_number,
                     "discnumber": disc_number,
-                    "date": self._mp4_text(audio, "\xa9day"),
+                    "date": self._mp4_text(mp4_audio, "\xa9day"),
                 }
         except Exception as exc:  # pragma: no cover - depends on local files
             logger.debug("Failed to read tags for %s: %s", meta.path, exc)
@@ -136,16 +149,53 @@ class TagWriter:
         frame = tags.getall(frame_id)
         if not frame:
             return None
-        return frame[0].text[0] if frame[0].text else None
+        if not frame[0].text:
+            return None
+        value = frame[0].text[0]
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            cleaned = value.decode("utf-8", errors="replace").strip()
+            return cleaned or None
+        if not isinstance(value, str):
+            value = str(value)
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _id3_comment(self, tags: ID3, desc: str) -> Optional[str]:
+        frames = tags.getall("COMM")
+        if not frames:
+            return None
+        for frame in frames:
+            if getattr(frame, "desc", None) != desc:
+                continue
+            text = getattr(frame, "text", None)
+            if not text:
+                continue
+            value = text[0]
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                value = str(value)
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+        return None
 
     def _mp4_text(self, audio: MP4, key: str) -> Optional[str]:
         value = audio.get(key)
         if not value:
             return None
         first = value[0]
+        if first is None:
+            return None
         if isinstance(first, bytes):
-            return first.decode("utf-8", errors="replace")
-        return str(first)
+            cleaned = first.decode("utf-8", errors="replace").strip()
+            return cleaned or None
+        if not isinstance(first, str):
+            first = str(first)
+        cleaned = first.strip()
+        return cleaned or None
 
     @staticmethod
     def _normalize(value: Optional[str]) -> str:

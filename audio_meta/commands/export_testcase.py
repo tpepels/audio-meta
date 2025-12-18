@@ -5,12 +5,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from ..daemon import AudioMetaDaemon
 from ..daemon_types import PendingResult, ReleaseExample
 from ..models import TrackMetadata
 from ..providers.musicbrainz import ReleaseData
+from ..providers.musicbrainz import LookupResult
 from ..pipeline.contexts import DirectoryContext, TrackEnrichmentContext, TrackSignalContext, TrackSkipContext
 from ..scanner import DirectoryBatch
 
@@ -120,13 +121,16 @@ def run(
         )
         if daemon.pipeline.should_skip_track(TrackSkipContext(daemon=daemon, directory=prepared.directory, file_path=file_path, directory_ctx=dir_ctx)):
             continue
-        result = daemon.pipeline.enrich_track(
+        result = cast(
+            Optional[LookupResult],
+            daemon.pipeline.enrich_track(
             TrackEnrichmentContext(
                 daemon=daemon,
                 directory=prepared.directory,
                 meta=meta,
                 existing_tags=dict(existing_tags),
             )
+        ),
         )
         pending_results.append(
             PendingResult(

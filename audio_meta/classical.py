@@ -48,16 +48,27 @@ class ClassicalHeuristics:
                 fallback_performers = tokens[1:]
         if meta.composer:
             original_artist = meta.artist
+            original_album_artist = meta.album_artist
             meta.album_artist = meta.composer
-            performer_names = []
-            if meta.conductor:
-                performer_names.append(meta.conductor)
+            performer_names: list[str] = []
             if meta.performers:
                 performer_names.extend(meta.performers)
             if fallback_performers:
                 performer_names.extend(fallback_performers)
+            if original_album_artist and original_album_artist != meta.composer:
+                performer_names.append(original_album_artist)
+            if original_artist and original_artist != meta.composer:
+                performer_names.append(original_artist)
+            if meta.conductor and meta.conductor != meta.composer:
+                performer_names.append(meta.conductor)
             if not performer_names:
-                performer_names.append(original_artist or meta.composer)
+                performer_names.append(original_album_artist or original_artist or meta.composer)
+            unique: list[str] = []
+            for name in performer_names:
+                for token in self._split_artist_tokens(name):
+                    if token not in unique:
+                        unique.append(token)
+            performer_names = unique
             meta.artist = "; ".join(performer_names)
         if meta.work and meta.title and not self._work_already_in_title(meta.work, meta.title):
             meta.title = f"{meta.work}: {meta.title}"

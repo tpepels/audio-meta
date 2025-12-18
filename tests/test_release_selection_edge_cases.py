@@ -255,6 +255,39 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
         )
         self.assertEqual(decision.best_release_id, "musicbrainz:single")
 
+    def test_require_confirmation_defers_in_non_force_prompt_mode(self) -> None:
+        class _DaemonWithDefer(_FakeDaemon):
+            def __init__(self) -> None:
+                super().__init__()
+                self.interactive = True
+                self.defer_prompts = True
+                self.deferred: list[tuple[Path, str]] = []
+
+            def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
+                self.deferred.append((directory, reason))
+
+        daemon = _DaemonWithDefer()
+        decision = decide_release(
+            daemon,
+            self.directory,
+            file_count=10,
+            is_singleton=False,
+            dir_track_count=10,
+            dir_year=None,
+            pending_results=[],
+            release_scores={"musicbrainz:mb1": 1.0},
+            release_examples={"musicbrainz:mb1": self._example("musicbrainz", "Album", "Artist", 10)},
+            discogs_details={},
+            forced_provider=None,
+            forced_release_id=None,
+            forced_release_score=0.0,
+            force_prompt=False,
+            release_summary_printed=False,
+            require_confirmation=True,
+        )
+        self.assertTrue(decision.should_abort)
+        self.assertEqual(daemon.deferred, [(self.directory, "suspicious_fingerprint")])
+
     def test_infers_dir_year_from_existing_tags(self) -> None:
         from audio_meta.daemon_types import PendingResult
         from audio_meta.models import TrackMetadata
