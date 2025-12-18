@@ -4,7 +4,13 @@ import logging
 from importlib import metadata
 from typing import Any, Iterable, Optional
 
-from .contexts import DirectoryContext, PlanApplyContext, TrackEnrichmentContext, TrackSignalContext, TrackSkipContext
+from .contexts import (
+    DirectoryContext,
+    PlanApplyContext,
+    TrackEnrichmentContext,
+    TrackSignalContext,
+    TrackSkipContext,
+)
 from .protocols import (
     CacheMaintenancePlugin,
     DirectoryDiagnosticsPlugin,
@@ -90,7 +96,12 @@ def _load_plugins(group: str) -> list[Any]:
             if plugin is not None:
                 plugins.append(plugin)
         except Exception as exc:  # pragma: no cover - plugin errors
-            logger.warning("Failed to load plugin %s from %s: %s", getattr(ep, "name", ep), group, exc)
+            logger.warning(
+                "Failed to load plugin %s from %s: %s",
+                getattr(ep, "name", ep),
+                group,
+                exc,
+            )
     return plugins
 
 
@@ -128,7 +139,11 @@ class ProcessingPipeline:
         disabled_plugins: Optional[set[str]] = None,
         plugin_order: Optional[dict[str, list[str]]] = None,
     ) -> None:
-        self._disabled_plugins = {name.strip() for name in (disabled_plugins or set()) if name and name.strip()}
+        self._disabled_plugins = {
+            name.strip()
+            for name in (disabled_plugins or set())
+            if name and name.strip()
+        }
         configured = {k: list(v) for k, v in (plugin_order or {}).items()}
         self._plugin_order = {k: list(v) for k, v in DEFAULT_PIPELINE_ORDER.items()}
         for key, order in configured.items():
@@ -140,37 +155,131 @@ class ProcessingPipeline:
         self._plan_appliers = list(_load_plugins("audio_meta.plan_appliers"))
         self._candidate_sources = list(_load_plugins("audio_meta.candidate_sources"))
         self._signal_extractors = list(_load_plugins("audio_meta.signal_extractors"))
-        self._directory_initializers = list(_load_plugins("audio_meta.directory_initializers"))
-        self._directory_skip_policies = list(_load_plugins("audio_meta.directory_skip_policies"))
-        self._directory_analyzers = list(_load_plugins("audio_meta.directory_analyzers"))
-        self._release_finalizers: list[ReleaseFinalizePlugin] = list(_load_plugins("audio_meta.release_appliers"))
-        self._track_skip_policies: list[TrackSkipPolicyPlugin] = list(_load_plugins("audio_meta.track_skip_policies"))
+        self._directory_initializers = list(
+            _load_plugins("audio_meta.directory_initializers")
+        )
+        self._directory_skip_policies = list(
+            _load_plugins("audio_meta.directory_skip_policies")
+        )
+        self._directory_analyzers = list(
+            _load_plugins("audio_meta.directory_analyzers")
+        )
+        self._release_finalizers: list[ReleaseFinalizePlugin] = list(
+            _load_plugins("audio_meta.release_appliers")
+        )
+        self._track_skip_policies: list[TrackSkipPolicyPlugin] = list(
+            _load_plugins("audio_meta.track_skip_policies")
+        )
         self._planners: list[PlannerPlugin] = list(_load_plugins("audio_meta.planners"))
-        self._singleton_handlers: list[SingletonHandlerPlugin] = list(_load_plugins("audio_meta.singleton_handlers"))
-        self._directory_finalizers: list[DirectoryFinalizePlugin] = list(_load_plugins("audio_meta.directory_finalizers"))
-        self._directory_diagnostics: list[DirectoryDiagnosticsPlugin] = list(_load_plugins("audio_meta.directory_diagnostics"))
-        self._cache_maintainers: list[CacheMaintenancePlugin] = list(_load_plugins("audio_meta.cache_maintainers"))
-        self._scan_diagnostics: list[ScanDiagnosticsPlugin] = list(_load_plugins("audio_meta.scan_diagnostics"))
-        self._plan_transforms: list[PlanTransformPlugin] = list(_load_plugins("audio_meta.plan_transforms"))
+        self._singleton_handlers: list[SingletonHandlerPlugin] = list(
+            _load_plugins("audio_meta.singleton_handlers")
+        )
+        self._directory_finalizers: list[DirectoryFinalizePlugin] = list(
+            _load_plugins("audio_meta.directory_finalizers")
+        )
+        self._directory_diagnostics: list[DirectoryDiagnosticsPlugin] = list(
+            _load_plugins("audio_meta.directory_diagnostics")
+        )
+        self._cache_maintainers: list[CacheMaintenancePlugin] = list(
+            _load_plugins("audio_meta.cache_maintainers")
+        )
+        self._scan_diagnostics: list[ScanDiagnosticsPlugin] = list(
+            _load_plugins("audio_meta.scan_diagnostics")
+        )
+        self._plan_transforms: list[PlanTransformPlugin] = list(
+            _load_plugins("audio_meta.plan_transforms")
+        )
 
-        self._release_deciders = [p for p in self._release_deciders if getattr(p, "name", "") not in self._disabled_plugins]
-        self._track_assigners = [p for p in self._track_assigners if getattr(p, "name", "") not in self._disabled_plugins]
-        self._unmatched_policies = [p for p in self._unmatched_policies if getattr(p, "name", "") not in self._disabled_plugins]
-        self._track_enrichers = [p for p in self._track_enrichers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._plan_appliers = [p for p in self._plan_appliers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._candidate_sources = [p for p in self._candidate_sources if getattr(p, "name", "") not in self._disabled_plugins]
-        self._signal_extractors = [p for p in self._signal_extractors if getattr(p, "name", "") not in self._disabled_plugins]
-        self._directory_initializers = [p for p in self._directory_initializers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._directory_skip_policies = [p for p in self._directory_skip_policies if getattr(p, "name", "") not in self._disabled_plugins]
-        self._directory_analyzers = [p for p in self._directory_analyzers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._track_skip_policies = [p for p in self._track_skip_policies if getattr(p, "name", "") not in self._disabled_plugins]
-        self._planners = [p for p in self._planners if getattr(p, "name", "") not in self._disabled_plugins]
-        self._singleton_handlers = [p for p in self._singleton_handlers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._directory_finalizers = [p for p in self._directory_finalizers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._directory_diagnostics = [p for p in self._directory_diagnostics if getattr(p, "name", "") not in self._disabled_plugins]
-        self._cache_maintainers = [p for p in self._cache_maintainers if getattr(p, "name", "") not in self._disabled_plugins]
-        self._scan_diagnostics = [p for p in self._scan_diagnostics if getattr(p, "name", "") not in self._disabled_plugins]
-        self._plan_transforms = [p for p in self._plan_transforms if getattr(p, "name", "") not in self._disabled_plugins]
+        self._release_deciders = [
+            p
+            for p in self._release_deciders
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._track_assigners = [
+            p
+            for p in self._track_assigners
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._unmatched_policies = [
+            p
+            for p in self._unmatched_policies
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._track_enrichers = [
+            p
+            for p in self._track_enrichers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._plan_appliers = [
+            p
+            for p in self._plan_appliers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._candidate_sources = [
+            p
+            for p in self._candidate_sources
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._signal_extractors = [
+            p
+            for p in self._signal_extractors
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._directory_initializers = [
+            p
+            for p in self._directory_initializers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._directory_skip_policies = [
+            p
+            for p in self._directory_skip_policies
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._directory_analyzers = [
+            p
+            for p in self._directory_analyzers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._track_skip_policies = [
+            p
+            for p in self._track_skip_policies
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._planners = [
+            p
+            for p in self._planners
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._singleton_handlers = [
+            p
+            for p in self._singleton_handlers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._directory_finalizers = [
+            p
+            for p in self._directory_finalizers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._directory_diagnostics = [
+            p
+            for p in self._directory_diagnostics
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._cache_maintainers = [
+            p
+            for p in self._cache_maintainers
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._scan_diagnostics = [
+            p
+            for p in self._scan_diagnostics
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
+        self._plan_transforms = [
+            p
+            for p in self._plan_transforms
+            if getattr(p, "name", "") not in self._disabled_plugins
+        ]
 
         def _append(plugin_list: list[Any], plugin: Any) -> None:
             name = getattr(plugin, "name", "") or plugin.__class__.__name__
@@ -267,7 +376,10 @@ class ProcessingPipeline:
                 result = plugin.decide(ctx)
             except Exception as exc:  # pragma: no cover - plugin errors
                 last_exc = exc
-                logger.exception("Release-decider plugin %s failed", getattr(plugin, "name", plugin.__class__.__name__))
+                logger.exception(
+                    "Release-decider plugin %s failed",
+                    getattr(plugin, "name", plugin.__class__.__name__),
+                )
                 continue
             if result is not None:
                 return result
@@ -275,14 +387,19 @@ class ProcessingPipeline:
             raise last_exc
         return DefaultReleaseDecisionPlugin().decide(ctx)  # type: ignore[return-value]
 
-    def finalize_release(self, ctx: DirectoryContext, decision: ReleaseDecision) -> ReleaseFinalizeOutcome:
+    def finalize_release(
+        self, ctx: DirectoryContext, decision: ReleaseDecision
+    ) -> ReleaseFinalizeOutcome:
         last_exc: Exception | None = None
         for plugin in self._release_finalizers:
             try:
                 result = plugin.finalize(ctx, decision)
             except Exception as exc:  # pragma: no cover - plugin errors
                 last_exc = exc
-                logger.exception("Release-finalize plugin %s failed", getattr(plugin, "name", plugin.__class__.__name__))
+                logger.exception(
+                    "Release-finalize plugin %s failed",
+                    getattr(plugin, "name", plugin.__class__.__name__),
+                )
                 continue
             if result is not None:
                 return result
@@ -307,7 +424,10 @@ class ProcessingPipeline:
                 handled = plugin.assign(ctx, force=force)
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                logger.exception("Track-assigner plugin %s failed", getattr(plugin, "name", plugin.__class__.__name__))
+                logger.exception(
+                    "Track-assigner plugin %s failed",
+                    getattr(plugin, "name", plugin.__class__.__name__),
+                )
                 continue
             if handled:
                 return True
@@ -340,7 +460,10 @@ class ProcessingPipeline:
                 result = plugin.enrich(ctx)
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                logger.exception("Track-enricher plugin %s failed", getattr(plugin, "name", plugin.__class__.__name__))
+                logger.exception(
+                    "Track-enricher plugin %s failed",
+                    getattr(plugin, "name", plugin.__class__.__name__),
+                )
                 continue
             if result is not None:
                 return result
@@ -359,7 +482,11 @@ class ProcessingPipeline:
                 )
                 continue
             if decision is not None:
-                if decision.should_skip and decision.reason and getattr(ctx, "directory_ctx", None) is not None:
+                if (
+                    decision.should_skip
+                    and decision.reason
+                    and getattr(ctx, "directory_ctx", None) is not None
+                ):
                     if ctx.directory_ctx is None:
                         continue
                     dir_ctx = ctx.directory_ctx
@@ -379,7 +506,10 @@ class ProcessingPipeline:
                 result = plugin.build(ctx)
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                logger.exception("Planner plugin %s failed", getattr(plugin, "name", plugin.__class__.__name__))
+                logger.exception(
+                    "Planner plugin %s failed",
+                    getattr(plugin, "name", plugin.__class__.__name__),
+                )
                 continue
             if result is not None:
                 return list(result)
@@ -457,7 +587,10 @@ class ProcessingPipeline:
                 handled = plugin.apply(ctx)
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                logger.exception("Plan-applier plugin %s failed", getattr(plugin, "name", plugin.__class__.__name__))
+                logger.exception(
+                    "Plan-applier plugin %s failed",
+                    getattr(plugin, "name", plugin.__class__.__name__),
+                )
                 continue
             if handled:
                 return True

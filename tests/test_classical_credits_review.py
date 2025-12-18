@@ -2,7 +2,14 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-from audio_meta.config import ClassicalSettings, DaemonSettings, LibrarySettings, OrganizerSettings, ProviderSettings, Settings
+from audio_meta.config import (
+    ClassicalSettings,
+    DaemonSettings,
+    LibrarySettings,
+    OrganizerSettings,
+    ProviderSettings,
+    Settings,
+)
 from audio_meta.daemon import AudioMetaDaemon
 from audio_meta.models import TrackMetadata
 
@@ -18,10 +25,18 @@ class TestClassicalCreditsReview(unittest.TestCase):
 
     def _daemon(self) -> AudioMetaDaemon:
         settings = Settings(
-            library=LibrarySettings(roots=[Path("/music")], include_extensions=[".flac"], exclude_patterns=[]),
-            providers=ProviderSettings(acoustid_api_key="x", musicbrainz_useragent="test"),
+            library=LibrarySettings(
+                roots=[Path("/music")],
+                include_extensions=[".flac"],
+                exclude_patterns=[],
+            ),
+            providers=ProviderSettings(
+                acoustid_api_key="x", musicbrainz_useragent="test"
+            ),
             organizer=OrganizerSettings(enabled=False),
-            classical=ClassicalSettings(genre_keywords=["classical"], min_duration_seconds=10),
+            classical=ClassicalSettings(
+                genre_keywords=["classical"], min_duration_seconds=10
+            ),
             daemon=DaemonSettings(
                 classical_credits_min_tracks=3,
                 classical_credits_min_coverage=0.6,

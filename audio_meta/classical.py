@@ -29,7 +29,10 @@ class ClassicalHeuristics:
             score += 0.4
         if meta.title and TITLE_PATTERN.search(meta.title):
             score += 0.3
-        if meta.duration_seconds and meta.duration_seconds >= self.settings.min_duration_seconds:
+        if (
+            meta.duration_seconds
+            and meta.duration_seconds >= self.settings.min_duration_seconds
+        ):
             score += 0.2
         if meta.composer and meta.artist and meta.composer != meta.artist:
             score += 0.1
@@ -62,7 +65,9 @@ class ClassicalHeuristics:
             if meta.conductor and meta.conductor != meta.composer:
                 performer_names.append(meta.conductor)
             if not performer_names:
-                performer_names.append(original_album_artist or original_artist or meta.composer)
+                performer_names.append(
+                    original_album_artist or original_artist or meta.composer
+                )
             unique: list[str] = []
             for name in performer_names:
                 for token in self._split_artist_tokens(name):
@@ -70,7 +75,11 @@ class ClassicalHeuristics:
                         unique.append(token)
             performer_names = unique
             meta.artist = "; ".join(performer_names)
-        if meta.work and meta.title and not self._work_already_in_title(meta.work, meta.title):
+        if (
+            meta.work
+            and meta.title
+            and not self._work_already_in_title(meta.work, meta.title)
+        ):
             meta.title = f"{meta.work}: {meta.title}"
         if meta.performers:
             meta.extra["PERFORMERS"] = "; ".join(meta.performers)
@@ -93,7 +102,9 @@ class ClassicalHeuristics:
     def _split_artist_tokens(self, value: Optional[str]) -> list[str]:
         if not value:
             return []
-        raw_tokens = [chunk.strip() for chunk in re.split(r"[;,]+", value) if chunk.strip()]
+        raw_tokens = [
+            chunk.strip() for chunk in re.split(r"[;,]+", value) if chunk.strip()
+        ]
         cleaned: list[str] = []
         for token in raw_tokens:
             simplified = token.strip()

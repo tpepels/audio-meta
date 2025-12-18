@@ -58,13 +58,19 @@ class _FakeDaemon:
     def _schedule_deferred_directory(self, _directory: Path, _reason: str) -> None:
         raise AssertionError("defer_prompts should be disabled in these tests")
 
-    def _auto_pick_equivalent_release(self, _candidates, *_args, **_kwargs) -> str | None:
+    def _auto_pick_equivalent_release(
+        self, _candidates, *_args, **_kwargs
+    ) -> str | None:
         return self._equivalent_pick
 
-    def _auto_pick_existing_release_home(self, _candidates, *_args, **_kwargs) -> str | None:
+    def _auto_pick_existing_release_home(
+        self, _candidates, *_args, **_kwargs
+    ) -> str | None:
         return self._home_pick
 
-    def _release_home_for_key(self, release_key: str, _current_dir: Path, _current_count: int):
+    def _release_home_for_key(
+        self, release_key: str, _current_dir: Path, _current_count: int
+    ):
         return None, int(self._release_home_counts.get(release_key, 0))
 
     def _adjust_release_scores(self, scores, _examples, *_args, **_kwargs):
@@ -76,7 +82,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
         self.daemon = _FakeDaemon()
         self.directory = Path("/music/Some Artist/Some Album")
 
-    def _example(self, provider: str, title: str, artist: str, track_total: int | None) -> ReleaseExample:
+    def _example(
+        self, provider: str, title: str, artist: str, track_total: int | None
+    ) -> ReleaseExample:
         return ReleaseExample(
             provider=provider,
             title=title,
@@ -128,7 +136,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             release_summary_printed=False,
         )
         self.assertEqual(decision.best_release_id, "musicbrainz:mb2")
-        self.assertEqual(decision.ambiguous_candidates, [("musicbrainz:mb2", decision.best_score)])
+        self.assertEqual(
+            decision.ambiguous_candidates, [("musicbrainz:mb2", decision.best_score)]
+        )
         self.assertFalse(decision.should_abort)
 
     def test_auto_pick_equivalent_release_collapses_candidates(self) -> None:
@@ -145,7 +155,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             release_scores=dict(scores),
             release_examples={
                 "musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 10),
-                "musicbrainz:mb2": self._example("musicbrainz", "A (deluxe)", "Artist", 10),
+                "musicbrainz:mb2": self._example(
+                    "musicbrainz", "A (deluxe)", "Artist", 10
+                ),
             },
             discogs_details={},
             forced_provider=None,
@@ -155,7 +167,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             release_summary_printed=False,
         )
         self.assertEqual(decision.best_release_id, "musicbrainz:mb2")
-        self.assertEqual(decision.ambiguous_candidates, [("musicbrainz:mb2", decision.best_score)])
+        self.assertEqual(
+            decision.ambiguous_candidates, [("musicbrainz:mb2", decision.best_score)]
+        )
         self.assertFalse(decision.should_abort)
 
     def test_singleton_home_pick_wins_when_ambiguous(self) -> None:
@@ -182,7 +196,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             release_summary_printed=False,
         )
         self.assertEqual(decision.best_release_id, "musicbrainz:mb2")
-        self.assertEqual(decision.ambiguous_candidates, [("musicbrainz:mb2", decision.best_score)])
+        self.assertEqual(
+            decision.ambiguous_candidates, [("musicbrainz:mb2", decision.best_score)]
+        )
         self.assertFalse(decision.should_abort)
 
     def test_low_coverage_noninteractive_aborts(self) -> None:
@@ -197,7 +213,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
                 dir_year=2000,
                 pending_results=[],
                 release_scores={"musicbrainz:mb1": 0.9},
-                release_examples={"musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 10)},
+                release_examples={
+                    "musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 10)
+                },
                 discogs_details={},
                 forced_provider=None,
                 forced_release_id=None,
@@ -206,7 +224,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
                 release_summary_printed=False,
             )
         self.assertTrue(decision.should_abort)
-        self.assertTrue(any("Low coverage" in reason for _, reason in self.daemon.recorded_skips))
+        self.assertTrue(
+            any("Low coverage" in reason for _, reason in self.daemon.recorded_skips)
+        )
 
     def test_prunes_single_track_releases_when_album_like_exists(self) -> None:
         scores = {"musicbrainz:single": 0.95, "musicbrainz:album": 0.8}
@@ -235,7 +255,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
 
     def test_keeps_single_track_release_when_no_album_like_exists(self) -> None:
         scores = {"musicbrainz:single": 0.95}
-        examples = {"musicbrainz:single": self._example("musicbrainz", "Song", "Artist", 1)}
+        examples = {
+            "musicbrainz:single": self._example("musicbrainz", "Song", "Artist", 1)
+        }
         decision = decide_release(
             self.daemon,
             self.directory,
@@ -263,7 +285,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
                 self.defer_prompts = True
                 self.deferred: list[tuple[Path, str]] = []
 
-            def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
+            def _schedule_deferred_directory(
+                self, directory: Path, reason: str
+            ) -> None:
                 self.deferred.append((directory, reason))
 
         daemon = _DaemonWithDefer()
@@ -276,7 +300,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             dir_year=None,
             pending_results=[],
             release_scores={"musicbrainz:mb1": 1.0},
-            release_examples={"musicbrainz:mb1": self._example("musicbrainz", "Album", "Artist", 10)},
+            release_examples={
+                "musicbrainz:mb1": self._example("musicbrainz", "Album", "Artist", 10)
+            },
             discogs_details={},
             forced_provider=None,
             forced_release_id=None,
@@ -294,11 +320,28 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
         from audio_meta.release_selection import _infer_dir_year_from_pending_results
 
         pending_results = [
-            PendingResult(meta=TrackMetadata(path=Path("/tmp/a.mp3")), result=None, matched=False, existing_tags={"date": "2002-01-01"}),
-            PendingResult(meta=TrackMetadata(path=Path("/tmp/b.mp3")), result=None, matched=False, existing_tags={"date": "2002"}),
-            PendingResult(meta=TrackMetadata(path=Path("/tmp/c.mp3")), result=None, matched=False, existing_tags={"date": "2014"}),
+            PendingResult(
+                meta=TrackMetadata(path=Path("/tmp/a.mp3")),
+                result=None,
+                matched=False,
+                existing_tags={"date": "2002-01-01"},
+            ),
+            PendingResult(
+                meta=TrackMetadata(path=Path("/tmp/b.mp3")),
+                result=None,
+                matched=False,
+                existing_tags={"date": "2002"},
+            ),
+            PendingResult(
+                meta=TrackMetadata(path=Path("/tmp/c.mp3")),
+                result=None,
+                matched=False,
+                existing_tags={"date": "2014"},
+            ),
         ]
-        self.assertEqual(_infer_dir_year_from_pending_results(self.daemon, pending_results), 2002)
+        self.assertEqual(
+            _infer_dir_year_from_pending_results(self.daemon, pending_results), 2002
+        )
 
     def test_dir_year_from_tags_is_passed_to_adjust_release_scores(self) -> None:
         from audio_meta.daemon_types import PendingResult
@@ -307,7 +350,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
         captured: dict[str, int | None] = {"dir_year": None}
 
         class _DaemonCapturingYear(_FakeDaemon):
-            def _adjust_release_scores(self, scores, _examples, _dir_track_count, dir_year, *_args, **_kwargs):
+            def _adjust_release_scores(
+                self, scores, _examples, _dir_track_count, dir_year, *_args, **_kwargs
+            ):
                 captured["dir_year"] = dir_year
                 return scores, {}
 
@@ -318,8 +363,7 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
                 result=None,
                 matched=False,
                 existing_tags={"date": "2002-01-01"},
-            )
-            ,
+            ),
             PendingResult(
                 meta=TrackMetadata(path=Path("/tmp/b.mp3")),
                 result=None,
@@ -336,7 +380,9 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             dir_year=None,
             pending_results=pending_results,
             release_scores={"musicbrainz:mb1": 0.9},
-            release_examples={"musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 2)},
+            release_examples={
+                "musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 2)
+            },
             discogs_details={},
             forced_provider=None,
             forced_release_id=None,

@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 class DiscogsClient:
-    def __init__(self, settings: ProviderSettings, cache: Optional[MetadataCache] = None) -> None:
+    def __init__(
+        self, settings: ProviderSettings, cache: Optional[MetadataCache] = None
+    ) -> None:
         if not settings.discogs_token:
             raise ValueError("Discogs token required")
         self.token = settings.discogs_token
@@ -34,7 +36,9 @@ class DiscogsClient:
         """Full enrichment (used as fallback when MusicBrainz fails)."""
         return self._enrich(meta, allow_overwrite=True)
 
-    def _enrich(self, meta: TrackMetadata, allow_overwrite: bool) -> Optional[LookupResult]:
+    def _enrich(
+        self, meta: TrackMetadata, allow_overwrite: bool
+    ) -> Optional[LookupResult]:
         guess = guess_metadata_from_path(meta.path)
         tags = self._read_basic_tags(meta.path)
         artist = tags.get("artist") or guess.artist
@@ -50,14 +54,18 @@ class DiscogsClient:
         details = self._fetch_release(release["id"])
         if not details:
             return None
-        track = self._match_track(details.get("tracklist", []), title, track_number, duration)
+        track = self._match_track(
+            details.get("tracklist", []), title, track_number, duration
+        )
         self._apply_release(meta, details, track, allow_overwrite)
         meta.extra.setdefault("DISCOGS_RELEASE_ID", str(details.get("id")))
         score = 0.35 if allow_overwrite else 0.3
         meta.match_confidence = max(meta.match_confidence or 0.0, score)
         return LookupResult(meta, score=score)
 
-    def _search_release(self, artist: Optional[str], album: Optional[str], title: Optional[str]) -> Optional[dict]:
+    def _search_release(
+        self, artist: Optional[str], album: Optional[str], title: Optional[str]
+    ) -> Optional[dict]:
         params = {
             "token": self.token,
             "type": "release",
@@ -69,7 +77,9 @@ class DiscogsClient:
             params["release_title"] = album
         if title:
             params["track"] = title
-        url = f"https://api.discogs.com/database/search?{urllib.parse.urlencode(params)}"
+        url = (
+            f"https://api.discogs.com/database/search?{urllib.parse.urlencode(params)}"
+        )
         cache_key = self._search_cache_key(artist, album, title)
         cached = self.cache.get_discogs_search(cache_key) if self.cache else None
         if cached is not None:
@@ -105,7 +115,9 @@ class DiscogsClient:
             params["release_title"] = album
         if title:
             params["track"] = title
-        url = f"https://api.discogs.com/database/search?{urllib.parse.urlencode(params)}"
+        url = (
+            f"https://api.discogs.com/database/search?{urllib.parse.urlencode(params)}"
+        )
         data = self._request(url)
         if not data:
             return []
@@ -127,7 +139,9 @@ class DiscogsClient:
     def get_release(self, release_id: int) -> Optional[dict]:
         return self._fetch_release(release_id)
 
-    def apply_release_details(self, meta: TrackMetadata, release: dict, allow_overwrite: bool = True) -> None:
+    def apply_release_details(
+        self, meta: TrackMetadata, release: dict, allow_overwrite: bool = True
+    ) -> None:
         guess = guess_metadata_from_path(meta.path)
         tags = self._read_basic_tags(meta.path)
         title = tags.get("title") or guess.title or meta.title
@@ -138,7 +152,9 @@ class DiscogsClient:
         else:
             track_number = guess.track_number
         duration = meta.duration_seconds or self._probe_duration(meta.path)
-        track = self._match_track(release.get("tracklist", []), title, track_number, duration)
+        track = self._match_track(
+            release.get("tracklist", []), title, track_number, duration
+        )
         self._apply_release(meta, release, track, allow_overwrite)
         meta.extra.setdefault("DISCOGS_RELEASE_ID", str(release.get("id")))
 
@@ -176,7 +192,13 @@ class DiscogsClient:
                     return track
         return tracklist[0] if tracklist else None
 
-    def _apply_release(self, meta: TrackMetadata, release: dict, track: Optional[dict], allow_overwrite: bool) -> None:
+    def _apply_release(
+        self,
+        meta: TrackMetadata,
+        release: dict,
+        track: Optional[dict],
+        allow_overwrite: bool,
+    ) -> None:
         def set_field(attr: str, value: Optional[str]) -> None:
             if not value:
                 return
@@ -187,7 +209,10 @@ class DiscogsClient:
         album_artist = self._join_artists(release.get("artists", []))
         set_field("album", release.get("title"))
         set_field("album_artist", album_artist)
-        set_field("artist", self._join_artists(track.get("artists", [])) if track else album_artist)
+        set_field(
+            "artist",
+            self._join_artists(track.get("artists", [])) if track else album_artist,
+        )
         if track and allow_overwrite:
             set_field("title", track.get("title"))
         genres = release.get("genres") or release.get("styles") or []

@@ -20,7 +20,9 @@ class DefaultPlannerPlugin(PlannerPlugin):
             meta = pending.meta
             result = pending.result
             if not pending.matched:
-                logger.warning("No metadata match for %s; leaving file untouched", meta.path)
+                logger.warning(
+                    "No metadata match for %s; leaving file untouched", meta.path
+                )
                 continue
 
             if ctx.best_release_key and ctx.applied_provider and ctx.applied_release_id:

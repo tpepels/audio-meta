@@ -49,7 +49,9 @@ class LibraryAuditor:
             self._cache = MetadataCache(settings.daemon.cache_path)
             self._owns_cache = True
         self.cache = self._cache
-        self.organizer = Organizer(settings.organizer, settings.library, cache=self.cache)
+        self.organizer = Organizer(
+            settings.organizer, settings.library, cache=self.cache
+        )
         # We always want to be able to compute destinations even if organizer is disabled globally.
         self.organizer.enabled = True
         self.heuristics = ClassicalHeuristics(settings.classical)
@@ -57,9 +59,15 @@ class LibraryAuditor:
         self.musicbrainz = musicbrainz
         if self.musicbrainz is None:
             try:
-                self.musicbrainz = MusicBrainzClient(settings.providers, cache=self.cache)
-            except Exception as exc:  # pragma: no cover - provider initialization errors are logged
-                logger.warning("MusicBrainz lookups disabled for singleton repair: %s", exc)
+                self.musicbrainz = MusicBrainzClient(
+                    settings.providers, cache=self.cache
+                )
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - provider initialization errors are logged
+                logger.warning(
+                    "MusicBrainz lookups disabled for singleton repair: %s", exc
+                )
         self.extensions = {ext.lower() for ext in settings.library.include_extensions}
         self.library_roots = [root.resolve() for root in settings.library.roots]
 
@@ -109,7 +117,9 @@ class LibraryAuditor:
         if self._owns_cache and self._cache:
             self._cache.close()
 
-    def _apply_tag_values(self, meta: TrackMetadata, tags: dict[str, Optional[str]]) -> None:
+    def _apply_tag_values(
+        self, meta: TrackMetadata, tags: dict[str, Optional[str]]
+    ) -> None:
         guess = guess_metadata_from_path(meta.path)
 
         def assign(attr: str, *keys: str) -> None:
@@ -123,6 +133,7 @@ class LibraryAuditor:
             fallback = getattr(guess, attr, None)
             if fallback:
                 setattr(meta, attr, fallback)
+
         def assign_list(attr: str, *keys: str) -> None:
             if getattr(meta, attr, None):
                 return
@@ -130,7 +141,9 @@ class LibraryAuditor:
                 value = tags.get(key)
                 if not value:
                     continue
-                parts = [chunk.strip() for chunk in value.replace(" / ", ";").split(";")]
+                parts = [
+                    chunk.strip() for chunk in value.replace(" / ", ";").split(";")
+                ]
                 cleaned = [p for p in parts if p]
                 if cleaned:
                     setattr(meta, attr, cleaned)
@@ -172,11 +185,15 @@ class LibraryAuditor:
         if mismatches:
             total = sum(len(entries) for entries in mismatches.values())
             print(f"\nDetected {total} file(s) stored under unexpected directories:")
-            for directory, entries in sorted(mismatches.items(), key=lambda item: item[0]):
+            for directory, entries in sorted(
+                mismatches.items(), key=lambda item: item[0]
+            ):
                 rel = self._display(directory)
                 print(f"- {rel}")
                 for current, target in sorted(entries)[:5]:
-                    print(f"    {current.name} -> {self._display(target.parent)}/{target.name}")
+                    print(
+                        f"    {current.name} -> {self._display(target.parent)}/{target.name}"
+                    )
                 remaining = len(entries) - min(len(entries), 5)
                 if remaining > 0:
                     print(f"    … {remaining} more")
@@ -209,7 +226,9 @@ class LibraryAuditor:
 
     def collect_singletons(self) -> List[SingletonEntry]:
         entries: List[SingletonEntry] = []
-        group_map: Dict[tuple[str, str, str], list[tuple[Path, int]]] = defaultdict(list)
+        group_map: Dict[tuple[str, str, str], list[tuple[Path, int]]] = defaultdict(
+            list
+        )
         pending: list[dict] = []
         for root in self.library_roots:
             if not root.exists():
@@ -236,7 +255,9 @@ class LibraryAuditor:
                     continue
                 if self.cache and self.cache.is_directory_ignored(directory):
                     continue
-                release_entry = self.cache.get_directory_release(directory) if self.cache else None
+                release_entry = (
+                    self.cache.get_directory_release(directory) if self.cache else None
+                )
                 release_id: Optional[str] = None
                 if release_entry:
                     _, release_id, _ = release_entry
@@ -270,7 +291,9 @@ class LibraryAuditor:
                 filename = canonical.name if canonical else file_path.name
                 target = self.organizer._truncate_target(release_home / filename)
             elif group_key:
-                release_home = self._best_directory_for_group(group_key, directory, group_map)
+                release_home = self._best_directory_for_group(
+                    group_key, directory, group_map
+                )
                 if release_home and release_home != directory:
                     filename = canonical.name if canonical else file_path.name
                     target = self.organizer._truncate_target(release_home / filename)
@@ -295,11 +318,15 @@ class LibraryAuditor:
 
         return entries
 
-    def _group_key(self, meta: TrackMetadata, classical: bool) -> Optional[tuple[str, str, str]]:
+    def _group_key(
+        self, meta: TrackMetadata, classical: bool
+    ) -> Optional[tuple[str, str, str]]:
         album_key = self._normalize_token(meta.album)
         artist_source = meta.album_artist or meta.artist
         artist_key = self._normalize_token(artist_source)
-        composer_key = self._normalize_token(self._primary_composer(meta.composer) if classical else None)
+        composer_key = self._normalize_token(
+            self._primary_composer(meta.composer) if classical else None
+        )
 
         if not album_key and not artist_key and not composer_key:
             return None
@@ -312,7 +339,9 @@ class LibraryAuditor:
             return None
         if ";" not in value and "," not in value:
             return value
-        parts = [part.strip() for part in re.split(r"[;,]+", value) if part and part.strip()]
+        parts = [
+            part.strip() for part in re.split(r"[;,]+", value) if part and part.strip()
+        ]
         for part in parts:
             if re.search(r"[A-Za-z]", part):
                 return part
@@ -349,18 +378,28 @@ class LibraryAuditor:
         try:
             result = self.musicbrainz.enrich(try_meta)
         except Exception as exc:  # pragma: no cover
-            logger.debug("MusicBrainz lookup failed for singleton %s: %s", meta.path, exc)
+            logger.debug(
+                "MusicBrainz lookup failed for singleton %s: %s", meta.path, exc
+            )
             return None
         release_id = try_meta.musicbrainz_release_id
         if not release_id:
             return None
         meta.musicbrainz_release_id = meta.musicbrainz_release_id or release_id
         if self.cache:
-            score = (result.score if result else 0.0) or (try_meta.match_confidence or 0.0) or 0.5
-            self.cache.set_directory_release(directory, "musicbrainz", release_id, score)
+            score = (
+                (result.score if result else 0.0)
+                or (try_meta.match_confidence or 0.0)
+                or 0.5
+            )
+            self.cache.set_directory_release(
+                directory, "musicbrainz", release_id, score
+            )
         return release_id
 
-    def _find_release_home(self, release_id: Optional[str], current_dir: Path) -> Optional[Path]:
+    def _find_release_home(
+        self, release_id: Optional[str], current_dir: Path
+    ) -> Optional[Path]:
         if not self.cache or not release_id:
             return None
         directories = self.cache.find_directories_for_release(release_id)

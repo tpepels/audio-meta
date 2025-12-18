@@ -13,9 +13,15 @@ class DefaultTrackAssignmentPlugin(TrackAssignmentPlugin):
             return False
         services = ctx.daemon.services
         if provider == "musicbrainz":
-            return bool(services.apply_musicbrainz_release_selection(ctx.directory, rid, ctx.pending_results, force=force))
+            return bool(
+                services.apply_musicbrainz_release_selection(
+                    ctx.directory, rid, ctx.pending_results, force=force
+                )
+            )
         if provider == "discogs":
-            details = ctx.discogs_release_details or ctx.discogs_details.get(ctx.best_release_key or "")
+            details = ctx.discogs_release_details or ctx.discogs_details.get(
+                ctx.best_release_key or ""
+            )
             if not details:
                 return False
             services.apply_discogs_release_details(ctx.pending_results, details)

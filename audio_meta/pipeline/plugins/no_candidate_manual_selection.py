@@ -23,7 +23,11 @@ class NoCandidateManualSelectionPlugin(ReleaseDecisionPlugin):
         if not ctx.pending_results:
             return None
 
-        if daemon.defer_prompts and not ctx.force_prompt and not daemon._processing_deferred:
+        if (
+            daemon.defer_prompts
+            and not ctx.force_prompt
+            and not daemon._processing_deferred
+        ):
             daemon._schedule_deferred_directory(ctx.directory, "no_release_candidates")
             return ReleaseDecision(
                 best_release_id=None,
@@ -65,8 +69,13 @@ class NoCandidateManualSelectionPlugin(ReleaseDecisionPlugin):
         provider, selection_id = selection
         if provider == "discogs":
             if not daemon.discogs:
-                daemon._record_skip(ctx.directory, "Discogs provider unavailable for manual selection")
-                logger.warning("Discogs provider unavailable; cannot apply manual selection for %s", ctx.directory)
+                daemon._record_skip(
+                    ctx.directory, "Discogs provider unavailable for manual selection"
+                )
+                logger.warning(
+                    "Discogs provider unavailable; cannot apply manual selection for %s",
+                    ctx.directory,
+                )
                 return ReleaseDecision(
                     best_release_id=None,
                     best_score=0.0,
@@ -81,8 +90,14 @@ class NoCandidateManualSelectionPlugin(ReleaseDecisionPlugin):
                 )
             details = daemon.discogs.get_release(int(selection_id))
             if not details:
-                daemon._record_skip(ctx.directory, f"Failed to load Discogs release {selection_id}")
-                logger.warning("Failed to load Discogs release %s; skipping %s", selection_id, ctx.directory)
+                daemon._record_skip(
+                    ctx.directory, f"Failed to load Discogs release {selection_id}"
+                )
+                logger.warning(
+                    "Failed to load Discogs release %s; skipping %s",
+                    selection_id,
+                    ctx.directory,
+                )
                 return ReleaseDecision(
                     best_release_id=None,
                     best_score=0.0,
@@ -127,8 +142,15 @@ class NoCandidateManualSelectionPlugin(ReleaseDecisionPlugin):
             force=True,
         )
         if not applied:
-            daemon._record_skip(ctx.directory, f"Manual MusicBrainz release {selection_id} did not match tracks")
-            logger.warning("Manual MusicBrainz release %s did not match tracks in %s", selection_id, ctx.directory)
+            daemon._record_skip(
+                ctx.directory,
+                f"Manual MusicBrainz release {selection_id} did not match tracks",
+            )
+            logger.warning(
+                "Manual MusicBrainz release %s did not match tracks in %s",
+                selection_id,
+                ctx.directory,
+            )
             return ReleaseDecision(
                 best_release_id=None,
                 best_score=0.0,
@@ -155,4 +177,3 @@ class NoCandidateManualSelectionPlugin(ReleaseDecisionPlugin):
             release_summary_printed=ctx.release_summary_printed,
             should_abort=False,
         )
-

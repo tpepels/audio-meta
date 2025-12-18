@@ -12,7 +12,12 @@ from ..daemon_types import PendingResult, ReleaseExample
 from ..models import TrackMetadata
 from ..providers.musicbrainz import ReleaseData
 from ..providers.musicbrainz import LookupResult
-from ..pipeline.contexts import DirectoryContext, TrackEnrichmentContext, TrackSignalContext, TrackSkipContext
+from ..pipeline.contexts import (
+    DirectoryContext,
+    TrackEnrichmentContext,
+    TrackSignalContext,
+    TrackSkipContext,
+)
 from ..scanner import DirectoryBatch
 
 
@@ -79,12 +84,17 @@ def run(
     if not batch:
         raise SystemExit(f"No audio files found in {directory}")
 
-    prepared = daemon._prepare_album_batch(DirectoryBatch(directory=batch.directory, files=list(batch.files)), force_prompt=True)
+    prepared = daemon._prepare_album_batch(
+        DirectoryBatch(directory=batch.directory, files=list(batch.files)),
+        force_prompt=True,
+    )
     if not prepared:
         raise SystemExit(f"Could not prepare album batch for {directory}")
 
     is_singleton = daemon._is_singleton_directory(prepared)
-    directory_hash = daemon._calculate_directory_hash(prepared.directory, prepared.files)
+    directory_hash = daemon._calculate_directory_hash(
+        prepared.directory, prepared.files
+    )
     dir_ctx = DirectoryContext(
         daemon=daemon,
         directory=prepared.directory,
@@ -119,18 +129,25 @@ def run(
                 existing_tags=dict(existing_tags),
             )
         )
-        if daemon.pipeline.should_skip_track(TrackSkipContext(daemon=daemon, directory=prepared.directory, file_path=file_path, directory_ctx=dir_ctx)):
+        if daemon.pipeline.should_skip_track(
+            TrackSkipContext(
+                daemon=daemon,
+                directory=prepared.directory,
+                file_path=file_path,
+                directory_ctx=dir_ctx,
+            )
+        ):
             continue
         result = cast(
             Optional[LookupResult],
             daemon.pipeline.enrich_track(
-            TrackEnrichmentContext(
-                daemon=daemon,
-                directory=prepared.directory,
-                meta=meta,
-                existing_tags=dict(existing_tags),
-            )
-        ),
+                TrackEnrichmentContext(
+                    daemon=daemon,
+                    directory=prepared.directory,
+                    meta=meta,
+                    existing_tags=dict(existing_tags),
+                )
+            ),
         )
         pending_results.append(
             PendingResult(
@@ -142,7 +159,9 @@ def run(
         )
 
     if not dir_ctx.release_scores and dir_ctx.discogs_release_details:
-        daemon._apply_discogs_release_details(pending_results, dir_ctx.discogs_release_details)
+        daemon._apply_discogs_release_details(
+            pending_results, dir_ctx.discogs_release_details
+        )
 
     daemon.pipeline.add_candidates(dir_ctx)
 
@@ -162,7 +181,11 @@ def run(
         if not key.startswith("musicbrainz:"):
             continue
         _, release_id = key.split(":", 1)
-        release = daemon.musicbrainz.release_tracker.releases.get(release_id) if daemon.musicbrainz else None
+        release = (
+            daemon.musicbrainz.release_tracker.releases.get(release_id)
+            if daemon.musicbrainz
+            else None
+        )
         if not release and daemon.musicbrainz:
             release = daemon.musicbrainz._fetch_release_tracks(release_id)
             if release:
@@ -218,7 +241,9 @@ def run(
     )
 
     payload = asdict(case)
-    payload["release_examples"] = {k: _release_example_to_dict(v) for k, v in case.release_examples.items()}
+    payload["release_examples"] = {
+        k: _release_example_to_dict(v) for k, v in case.release_examples.items()
+    }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(f"Wrote testcase to {out}")

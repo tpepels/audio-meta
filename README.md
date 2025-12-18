@@ -74,6 +74,7 @@ organizer:
 | `audio-meta --config config.yaml rollback-moves` | Undo the most recent organizer moves using the move history stored in the cache. |
 | `audio-meta --config config.yaml daemon` | Start the filesystem watcher to process new files continuously. |
 | `audio-meta --config config.yaml doctor` | Validate config/cache/pipeline; pass `--providers` to validate provider credentials via network. |
+| `audio-meta --config config.yaml export-testcase DIR --out case.json` | Export a deterministic release-selection fixture for unit tests (see `docs/TESTCASES.md`). |
 
 Useful global flags (place them before the subcommand):
 
@@ -105,6 +106,9 @@ For a stage-by-stage description of where decisions happen, see `docs/PIPELINE.m
 ## Deferred prompts & manual selections
 
 - When the scanner cannot confidently choose a release (or when coverage is low), the directory is added to a deferred queue along with the reason.
+- Some safety checks also defer directories:
+  - **Suspicious fingerprint**: AcoustID match contradicts existing tags (album/album artist).
+  - **Classical credits**: performer credits are missing or inconsistent across tracks.
 - After the scan, the tool replays that queue and shows a menu that lists MusicBrainz / Discogs candidates, including track counts, formats, and scores.
 - Input is numeric (e.g., `1`) for the best candidate, or `mb:<release-id>` / `dg:<release-id>` if you have a specific release in mind.
 - Additional options:

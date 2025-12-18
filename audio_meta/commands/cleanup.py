@@ -33,7 +33,9 @@ def run(settings: Settings, *, dry_run: bool = False) -> None:
             removed_files += removed
             print(f"Removed {path}")
     suffix = " (dry-run)" if dry_run else ""
-    print(f"Cleanup complete{suffix}: removed {removed_dirs} directories containing only non-audio files.")
+    print(
+        f"Cleanup complete{suffix}: removed {removed_dirs} directories containing only non-audio files."
+    )
     if not dry_run:
         print(f"Deleted {removed_files} files with non-audio content.")
 
@@ -78,15 +80,25 @@ def fit_destination_path(path: Path) -> Path:
     if allowed < 0:
         allowed = 0
     stem = path.stem or "file"
-    truncated = stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or "file"
+    truncated = (
+        stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or "file"
+    )
     candidate = path.with_name(f"{truncated}{ELLIPSIS}{path.suffix}")
     counter = 1
     while candidate.exists():
         extra = f"_{counter}"
         extra_bytes = extra.encode("utf-8")
-        allowed = MAX_BASENAME_BYTES - len(suffix_bytes) - len(ellipsis_bytes) - len(extra_bytes)
+        allowed = (
+            MAX_BASENAME_BYTES
+            - len(suffix_bytes)
+            - len(ellipsis_bytes)
+            - len(extra_bytes)
+        )
         allowed = max(0, allowed)
-        truncated = stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore") or f"file{counter}"
+        truncated = (
+            stem.encode("utf-8")[:allowed].decode("utf-8", errors="ignore")
+            or f"file{counter}"
+        )
         candidate = path.with_name(f"{truncated}{extra}{ELLIPSIS}{path.suffix}")
         counter += 1
     return candidate

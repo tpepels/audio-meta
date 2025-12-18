@@ -33,7 +33,9 @@ class DefaultDirectoryInitializerPlugin(DirectoryInitializerPlugin):
                 disc_count=release_data.disc_count or None,
                 formats=list(release_data.formats),
             )
-            ctx.release_scores[key] = max(ctx.release_scores.get(key, 0.0), float(cached_score or 1.0))
+            ctx.release_scores[key] = max(
+                ctx.release_scores.get(key, 0.0), float(cached_score or 1.0)
+            )
             return
         if provider == "discogs" and getattr(daemon, "discogs", None):
             details = daemon.discogs.get_release(int(cached_release_id))
@@ -51,4 +53,6 @@ class DefaultDirectoryInitializerPlugin(DirectoryInitializerPlugin):
                 disc_count=details.get("disc_count"),
                 formats=details.get("formats") or [],
             )
-            ctx.release_scores[key] = max(ctx.release_scores.get(key, 0.0), float(cached_score or 1.0))
+            ctx.release_scores[key] = max(
+                ctx.release_scores.get(key, 0.0), float(cached_score or 1.0)
+            )

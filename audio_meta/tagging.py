@@ -3,7 +3,19 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TALB, TPE1, TPE2, TCON, TCOM, COMM, TRCK, TPOS
+from mutagen.id3 import (
+    ID3,
+    ID3NoHeaderError,
+    TIT2,
+    TALB,
+    TPE1,
+    TPE2,
+    TCON,
+    TCOM,
+    COMM,
+    TRCK,
+    TPOS,
+)
 from mutagen.mp4 import MP4
 from mutagen.flac import FLAC
 
@@ -42,14 +54,18 @@ class TagWriter:
         changes: Dict[str, Dict[str, Optional[str]]] = {}
         for key, expected in desired.items():
             current_value = None if current is None else current.get(key)
-            if expected is not None and self._normalize(current_value) != self._normalize(expected):
+            if expected is not None and self._normalize(
+                current_value
+            ) != self._normalize(expected):
                 changes[key] = {
                     "old": current_value,
                     "new": expected,
                 }
         return changes
 
-    def read_existing_tags(self, meta: TrackMetadata) -> Optional[Dict[str, Optional[str]]]:
+    def read_existing_tags(
+        self, meta: TrackMetadata
+    ) -> Optional[Dict[str, Optional[str]]]:
         ext = meta.path.suffix.lower()
         if ext not in self.SUPPORTED_EXTS:
             return None
@@ -68,7 +84,9 @@ class TagWriter:
         }
         return {k: v for k, v in mapping.items() if v is not None}
 
-    def _read_tags(self, meta: TrackMetadata, ext: str) -> Optional[Dict[str, Optional[str]]]:
+    def _read_tags(
+        self, meta: TrackMetadata, ext: str
+    ) -> Optional[Dict[str, Optional[str]]]:
         try:
             if ext == ".mp3":
                 id3_tags = ID3(meta.path)
@@ -77,15 +95,18 @@ class TagWriter:
                     "album": self._id3_text(id3_tags, "TALB"),
                     "artist": self._id3_text(id3_tags, "TPE1"),
                     "album_artist": self._id3_text(id3_tags, "TPE2"),
-                    "conductor": self._id3_text(id3_tags, "TPE3") or self._id3_comment(id3_tags, "CONDUCTOR"),
-                    "performers": self._id3_comment(id3_tags, "PERFORMERS") or self._id3_comment(id3_tags, "PERFORMER"),
+                    "conductor": self._id3_text(id3_tags, "TPE3")
+                    or self._id3_comment(id3_tags, "CONDUCTOR"),
+                    "performers": self._id3_comment(id3_tags, "PERFORMERS")
+                    or self._id3_comment(id3_tags, "PERFORMER"),
                     "composer": self._id3_text(id3_tags, "TCOM"),
                     "genre": self._id3_text(id3_tags, "TCON"),
                     "work": self._id3_text(id3_tags, "TIT1"),
                     "movement": self._id3_text(id3_tags, "MVNM"),
                     "tracknumber": self._id3_text(id3_tags, "TRCK"),
                     "discnumber": self._id3_text(id3_tags, "TPOS"),
-                    "date": self._id3_text(id3_tags, "TDRC") or self._id3_text(id3_tags, "TYER"),
+                    "date": self._id3_text(id3_tags, "TDRC")
+                    or self._id3_text(id3_tags, "TYER"),
                 }
             if ext == ".flac":
                 flac_audio = FLAC(meta.path)
@@ -101,14 +122,18 @@ class TagWriter:
                     "artist": flac_audio.get("ARTIST", [None])[0],
                     "album_artist": flac_audio.get("ALBUMARTIST", [None])[0],
                     "conductor": flac_audio.get("CONDUCTOR", [None])[0],
-                    "performers": "; ".join([p for p in performers if isinstance(p, str) and p]) or None,
+                    "performers": "; ".join(
+                        [p for p in performers if isinstance(p, str) and p]
+                    )
+                    or None,
                     "composer": flac_audio.get("COMPOSER", [None])[0],
                     "genre": flac_audio.get("GENRE", [None])[0],
                     "work": flac_audio.get("WORK", [None])[0],
                     "movement": flac_audio.get("MOVEMENT", [None])[0],
                     "tracknumber": flac_audio.get("TRACKNUMBER", [None])[0],
                     "discnumber": flac_audio.get("DISCNUMBER", [None])[0],
-                    "date": flac_audio.get("DATE", [None])[0] or flac_audio.get("YEAR", [None])[0],
+                    "date": flac_audio.get("DATE", [None])[0]
+                    or flac_audio.get("YEAR", [None])[0],
                 }
             if ext == ".m4a":
                 mp4_audio = MP4(meta.path)
@@ -129,13 +154,21 @@ class TagWriter:
                     "album": self._mp4_text(mp4_audio, "\xa9alb"),
                     "artist": self._mp4_text(mp4_audio, "\xa9ART"),
                     "album_artist": self._mp4_text(mp4_audio, "aART"),
-                    "conductor": self._mp4_text(mp4_audio, "----:com.apple.iTunes:CONDUCTOR"),
-                    "performers": self._mp4_text(mp4_audio, "----:com.apple.iTunes:PERFORMERS")
+                    "conductor": self._mp4_text(
+                        mp4_audio, "----:com.apple.iTunes:CONDUCTOR"
+                    ),
+                    "performers": self._mp4_text(
+                        mp4_audio, "----:com.apple.iTunes:PERFORMERS"
+                    )
                     or self._mp4_text(mp4_audio, "----:com.apple.iTunes:PERFORMER"),
-                    "composer": self._mp4_text(mp4_audio, "----:com.apple.iTunes:COMPOSER"),
+                    "composer": self._mp4_text(
+                        mp4_audio, "----:com.apple.iTunes:COMPOSER"
+                    ),
                     "genre": self._mp4_text(mp4_audio, "\xa9gen"),
                     "work": self._mp4_text(mp4_audio, "----:com.apple.iTunes:WORK"),
-                    "movement": self._mp4_text(mp4_audio, "----:com.apple.iTunes:MOVEMENT"),
+                    "movement": self._mp4_text(
+                        mp4_audio, "----:com.apple.iTunes:MOVEMENT"
+                    ),
                     "tracknumber": track_number,
                     "discnumber": disc_number,
                     "date": self._mp4_text(mp4_audio, "\xa9day"),
@@ -263,10 +296,14 @@ class TagWriter:
         if disc_number and disc_number.isdigit():
             audio["disk"] = [(int(disc_number), 0)]
         for key, value in extra.items():
-            self._set_mp4_value(audio, f"----:com.audio-meta:{key}", value, freeform=True)
+            self._set_mp4_value(
+                audio, f"----:com.audio-meta:{key}", value, freeform=True
+            )
         audio.save()
 
-    def _write_vorbis_comments(self, audio: FLAC, mapping: Dict[str, str | None], extra: Dict[str, Any]) -> None:
+    def _write_vorbis_comments(
+        self, audio: FLAC, mapping: Dict[str, str | None], extra: Dict[str, Any]
+    ) -> None:
         for key, value in mapping.items():
             if value:
                 audio[key] = value
@@ -275,11 +312,17 @@ class TagWriter:
                 continue
             audio[key] = value if isinstance(value, str) else str(value)
 
-    def _set_frame(self, tags: ID3, frame_cls, value: str | None, desc: str = "") -> None:
+    def _set_frame(
+        self, tags: ID3, frame_cls, value: str | None, desc: str = ""
+    ) -> None:
         if value:
-            tags.setall(frame_cls.__name__, [frame_cls(encoding=3, text=value, desc=desc)])
+            tags.setall(
+                frame_cls.__name__, [frame_cls(encoding=3, text=value, desc=desc)]
+            )
 
-    def _set_mp4_value(self, audio: MP4, key: str, value: str, freeform: bool = False) -> None:
+    def _set_mp4_value(
+        self, audio: MP4, key: str, value: str, freeform: bool = False
+    ) -> None:
         if freeform or key.startswith("----:"):
             payload = value.encode("utf-8") if isinstance(value, str) else value
             audio[key] = [payload]

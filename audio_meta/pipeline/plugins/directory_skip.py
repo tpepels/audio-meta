@@ -21,10 +21,16 @@ class DefaultDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
         if not ctx.directory_hash:
             return False
         if ctx.hash_release_entry is None:
-            ctx.hash_release_entry = daemon.cache.get_release_by_hash(ctx.directory_hash)
+            ctx.hash_release_entry = daemon.cache.get_release_by_hash(
+                ctx.directory_hash
+            )
         if ctx.cached_directory_hash is None:
             ctx.cached_directory_hash = daemon.cache.get_directory_hash(ctx.directory)
-        if ctx.cached_directory_hash and ctx.cached_directory_hash == ctx.directory_hash and ctx.hash_release_entry:
+        if (
+            ctx.cached_directory_hash
+            and ctx.cached_directory_hash == ctx.directory_hash
+            and ctx.hash_release_entry
+        ):
             logger.debug(
                 "Skipping %s; directory unchanged (hash=%s)",
                 daemon._display_path(ctx.directory),

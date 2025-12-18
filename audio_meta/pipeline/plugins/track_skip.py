@@ -28,12 +28,19 @@ class DefaultTrackSkipPolicyPlugin(TrackSkipPolicyPlugin):
             return TrackSkipDecision(should_skip=False)
 
         cached_mtime, cached_size, organized_flag = cached_state
-        if cached_mtime != stat_before.st_mtime_ns or cached_size != stat_before.st_size:
+        if (
+            cached_mtime != stat_before.st_mtime_ns
+            or cached_size != stat_before.st_size
+        ):
             return TrackSkipDecision(should_skip=False)
 
         if daemon.organizer.enabled and not organized_flag:
-            logger.debug("Reprocessing %s because organizer is now enabled", ctx.file_path)
-            return TrackSkipDecision(should_skip=False, reason="organizer_enabled_changed")
+            logger.debug(
+                "Reprocessing %s because organizer is now enabled", ctx.file_path
+            )
+            return TrackSkipDecision(
+                should_skip=False, reason="organizer_enabled_changed"
+            )
 
         moved_target = daemon.cache.get_move(ctx.file_path)
         if moved_target and Path(moved_target).exists():

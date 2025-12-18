@@ -43,7 +43,9 @@ class TestClassicalHeuristics(unittest.TestCase):
         self.assertTrue(heur.adapt_metadata(meta))
         self.assertEqual(meta.composer, "Chopin")
 
-    def test_adapt_metadata_uses_album_artist_as_performer_when_composer_present(self) -> None:
+    def test_adapt_metadata_uses_album_artist_as_performer_when_composer_present(
+        self,
+    ) -> None:
         heur = ClassicalHeuristics(
             ClassicalSettings(
                 genre_keywords=["classical"],
@@ -82,7 +84,9 @@ class TestClassicalHeuristics(unittest.TestCase):
         meta.performers = ["Martha Argerich", "Berliner Philharmoniker"]
         meta.conductor = "Claudio Abbado"
         self.assertTrue(heur.adapt_metadata(meta))
-        self.assertEqual(meta.artist, "Martha Argerich; Berliner Philharmoniker; Claudio Abbado")
+        self.assertEqual(
+            meta.artist, "Martha Argerich; Berliner Philharmoniker; Claudio Abbado"
+        )
 
 
 if __name__ == "__main__":

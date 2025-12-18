@@ -6,9 +6,13 @@ from audio_meta.providers.musicbrainz import MusicBrainzClient
 
 class TestMusicBrainzReleaseTrackNumbers(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = MusicBrainzClient(ProviderSettings(acoustid_api_key="x", musicbrainz_useragent="test"))
+        self.client = MusicBrainzClient(
+            ProviderSettings(acoustid_api_key="x", musicbrainz_useragent="test")
+        )
 
-    def _numbers_from_payload(self, track_numbers: list[str | None]) -> list[int | None]:
+    def _numbers_from_payload(
+        self, track_numbers: list[str | None]
+    ) -> list[int | None]:
         release = {
             "id": "release-1",
             "title": "Transmission / Novelty",
@@ -46,4 +50,3 @@ class TestMusicBrainzReleaseTrackNumbers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -37,7 +37,9 @@ class TestDirectoryIdentity(unittest.TestCase):
 
     def test_normalize_hint_value_strips_accents(self) -> None:
         self.assertEqual(normalize_hint_value("Frédéric Chopin"), "frederic chopin")
-        self.assertEqual(normalize_hint_value("Études op. 10 & op. 25"), "etudes op 10 op 25")
+        self.assertEqual(
+            normalize_hint_value("Études op. 10 & op. 25"), "etudes op 10 op 25"
+        )
 
     def test_hint_cache_key_requires_album(self) -> None:
         self.assertIsNone(hint_cache_key("Artist", None))
@@ -45,7 +47,9 @@ class TestDirectoryIdentity(unittest.TestCase):
 
     def test_tokenize_and_overlap(self) -> None:
         self.assertEqual(tokenize("A/B - C"), ["a", "b", "c"])
-        self.assertAlmostEqual(token_overlap_ratio("frederic chopin", "Chopin, Frédéric"), 1.0)
+        self.assertAlmostEqual(
+            token_overlap_ratio("frederic chopin", "Chopin, Frédéric"), 1.0
+        )
 
 
 if __name__ == "__main__":

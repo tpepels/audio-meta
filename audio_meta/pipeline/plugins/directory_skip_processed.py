@@ -28,8 +28,15 @@ class ProcessedDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
             if not cached:
                 return False
             cached_mtime, cached_size, organized_flag = cached
-            if cached_mtime != stat.st_mtime_ns or cached_size != stat.st_size or not organized_flag:
+            if (
+                cached_mtime != stat.st_mtime_ns
+                or cached_size != stat.st_size
+                or not organized_flag
+            ):
                 return False
-        logger.debug("Skipping %s; directory already processed and organized", daemon._display_path(ctx.directory))
+        logger.debug(
+            "Skipping %s; directory already processed and organized",
+            daemon._display_path(ctx.directory),
+        )
         ctx.diagnostics.setdefault("skip_reason", "directory_already_processed")
         return True

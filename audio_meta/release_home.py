@@ -28,7 +28,9 @@ def maybe_set_release_home(
             if existing_hash and current_hash and existing_hash != current_hash:
                 daemon.cache.delete_release_home(release_key)
             else:
-                effective_existing = int(existing_count or daemon._count_audio_files(existing_dir))
+                effective_existing = int(
+                    existing_count or daemon._count_audio_files(existing_dir)
+                )
                 if existing_dir != directory and effective_existing >= track_count:
                     daemon.cache.set_release_home(
                         release_key,
@@ -37,7 +39,9 @@ def maybe_set_release_home(
                         directory_hash=current_hash or existing_hash,
                     )
                     return
-    daemon.cache.set_release_home(release_key, directory, track_count=track_count, directory_hash=directory_hash)
+    daemon.cache.set_release_home(
+        release_key, directory, track_count=track_count, directory_hash=directory_hash
+    )
 
 
 def select_singleton_release_home(
@@ -117,4 +121,3 @@ def plan_singleton_target(
         return daemon.organizer._truncate_target(target)
     except AttributeError:  # pragma: no cover - organizer API safeguard
         return target
-

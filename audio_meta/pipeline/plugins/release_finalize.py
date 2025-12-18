@@ -13,13 +13,17 @@ logger = logging.getLogger(__name__)
 class DefaultReleaseFinalizePlugin(ReleaseFinalizePlugin):
     name = "default_release_finalize"
 
-    def finalize(self, ctx: DirectoryContext, decision: ReleaseDecision) -> ReleaseFinalizeOutcome | None:
+    def finalize(
+        self, ctx: DirectoryContext, decision: ReleaseDecision
+    ) -> ReleaseFinalizeOutcome | None:
         daemon = ctx.daemon
         services = daemon.services
         best_release_id = decision.best_release_id
         best_score = decision.best_score
 
-        discogs_release_details = decision.discogs_release_details or ctx.discogs_release_details
+        discogs_release_details = (
+            decision.discogs_release_details or ctx.discogs_release_details
+        )
         release_summary_printed = decision.release_summary_printed
 
         applied_provider: str | None = None
@@ -28,7 +32,9 @@ class DefaultReleaseFinalizePlugin(ReleaseFinalizePlugin):
         album_artist = ""
 
         if best_release_id:
-            best_provider, best_release_plain_id = services.split_release_key(best_release_id)
+            best_provider, best_release_plain_id = services.split_release_key(
+                best_release_id
+            )
             applied_provider = best_provider
             applied_release_plain_id = best_release_plain_id
 
@@ -42,8 +48,15 @@ class DefaultReleaseFinalizePlugin(ReleaseFinalizePlugin):
             if best_provider == "musicbrainz":
                 release_ref = services.fetch_musicbrainz_release(best_release_plain_id)
                 if not release_ref:
-                    services.record_skip(ctx.directory, f"MusicBrainz release {best_release_plain_id} unavailable")
-                    logger.warning("MusicBrainz release %s unavailable for %s", best_release_plain_id, ctx.directory)
+                    services.record_skip(
+                        ctx.directory,
+                        f"MusicBrainz release {best_release_plain_id} unavailable",
+                    )
+                    logger.warning(
+                        "MusicBrainz release %s unavailable for %s",
+                        best_release_plain_id,
+                        ctx.directory,
+                    )
                     return ReleaseFinalizeOutcome(
                         provider=applied_provider,
                         release_id=applied_release_plain_id,
@@ -77,18 +90,31 @@ class DefaultReleaseFinalizePlugin(ReleaseFinalizePlugin):
                     album_hint=album_name,
                 )
             else:
-                details = discogs_release_details or ctx.discogs_details.get(best_release_id)
+                details = discogs_release_details or ctx.discogs_details.get(
+                    best_release_id
+                )
                 if not details and getattr(daemon, "discogs", None):
                     try:
                         details = daemon.discogs.get_release(int(best_release_plain_id))
                     except Exception as exc:  # pragma: no cover
-                        logger.warning("Failed to load Discogs release %s: %s", best_release_plain_id, exc)
+                        logger.warning(
+                            "Failed to load Discogs release %s: %s",
+                            best_release_plain_id,
+                            exc,
+                        )
                         details = None
                     if details:
                         ctx.discogs_details[best_release_id] = details
                 if not details:
-                    services.record_skip(ctx.directory, f"Discogs release {best_release_plain_id} unavailable")
-                    logger.warning("Discogs release %s unavailable for %s", best_release_plain_id, ctx.directory)
+                    services.record_skip(
+                        ctx.directory,
+                        f"Discogs release {best_release_plain_id} unavailable",
+                    )
+                    logger.warning(
+                        "Discogs release %s unavailable for %s",
+                        best_release_plain_id,
+                        ctx.directory,
+                    )
                     return ReleaseFinalizeOutcome(
                         provider=applied_provider,
                         release_id=applied_release_plain_id,

@@ -35,7 +35,9 @@ def run(cache: MetadataCache) -> None:
             continue
         fitted_source = fit_destination_path(source)
         if fitted_source != source:
-            logging.info("Truncating restore path %s -> %s", source.name, fitted_source.name)
+            logging.info(
+                "Truncating restore path %s -> %s", source.name, fitted_source.name
+            )
             source = fitted_source
         source.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -46,7 +48,9 @@ def run(cache: MetadataCache) -> None:
                     raise
                 shutil.move(str(target), str(source))
             stat = source.stat()
-            cache.set_processed_file(source, stat.st_mtime_ns, stat.st_size, organized=False)
+            cache.set_processed_file(
+                source, stat.st_mtime_ns, stat.st_size, organized=False
+            )
             cache.delete_move(source_entry)
             restored += 1
             logging.info("Restored %s -> %s", target, source)

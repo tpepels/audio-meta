@@ -28,7 +28,9 @@ class DefaultScanDiagnosticsPlugin(ScanDiagnosticsPlugin):
                 continue
             warn_log_path = str(filename)
             try:
-                warning_lines = sum(1 for _ in Path(filename).open("r", encoding="utf-8"))
+                warning_lines = sum(
+                    1 for _ in Path(filename).open("r", encoding="utf-8")
+                )
             except OSError:
                 warning_lines = None
             break
@@ -55,4 +57,9 @@ class DefaultScanDiagnosticsPlugin(ScanDiagnosticsPlugin):
         if warning_lines is None:
             logger.info("Scan complete: skipped=%d deferred=%d", skipped, deferred)
         else:
-            logger.info("Scan complete: skipped=%d deferred=%d warnings=%d", skipped, deferred, warning_lines)
+            logger.info(
+                "Scan complete: skipped=%d deferred=%d warnings=%d",
+                skipped,
+                deferred,
+                warning_lines,
+            )

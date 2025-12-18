@@ -11,4 +11,3 @@ class DefaultTrackEnricherPlugin(TrackEnricherPlugin):
 
     def enrich(self, ctx: TrackEnrichmentContext) -> Optional[object]:
         return ctx.daemon._enrich_track_default(ctx.meta)
-

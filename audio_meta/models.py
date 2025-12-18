@@ -59,7 +59,13 @@ class TrackMetadata:
             return [TrackMetadata._serialize(item) for item in value]
         if isinstance(value, dict):
             return {
-                (k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k) if isinstance(k, Path) else k): TrackMetadata._serialize(v)
+                (
+                    k.decode("utf-8", errors="replace")
+                    if isinstance(k, bytes)
+                    else str(k)
+                    if isinstance(k, Path)
+                    else k
+                ): TrackMetadata._serialize(v)
                 for k, v in value.items()
             }
         return value

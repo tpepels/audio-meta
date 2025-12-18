@@ -38,7 +38,9 @@ def adjust_release_scores(
         bonus = 0.0
         release_track_total = example.track_total if example else None
         if dir_track_count and release_track_total:
-            ratio = min(dir_track_count, release_track_total) / max(dir_track_count, release_track_total)
+            ratio = min(dir_track_count, release_track_total) / max(
+                dir_track_count, release_track_total
+            )
             if ratio >= 0.95:
                 bonus += 0.08
             elif ratio >= 0.85:
@@ -70,12 +72,21 @@ def adjust_release_scores(
             discogs_details,
             release_examples,
         )
-        if dir_flags and key.startswith("musicbrainz:") and release_track_total and release_track_total >= dir_track_count:
+        if (
+            dir_flags
+            and key.startswith("musicbrainz:")
+            and release_track_total
+            and release_track_total >= dir_track_count
+        ):
             provider, release_id = daemon._split_release_key(key)
             if provider == "musicbrainz" and release_id:
-                release_data = daemon.musicbrainz.release_tracker.releases.get(release_id)
+                release_data = daemon.musicbrainz.release_tracker.releases.get(
+                    release_id
+                )
                 if release_data and release_data.tracks:
-                    track_text = " ".join(t.title or "" for t in release_data.tracks[:50]).lower()
+                    track_text = " ".join(
+                        t.title or "" for t in release_data.tracks[:50]
+                    ).lower()
                     if "piano" in dir_flags and "piano" in track_text:
                         bonus += 0.02
                     if "bonus" in dir_flags and "bonus" in track_text:
@@ -96,7 +107,9 @@ def warn_ambiguous_release(
     parse_year,
     split_release_key,
 ) -> None:
-    hint = f"{dir_track_count} audio files" if dir_track_count else "unknown track count"
+    hint = (
+        f"{dir_track_count} audio files" if dir_track_count else "unknown track count"
+    )
     if dir_year:
         hint = f"{hint}; year hint {dir_year}"
     entry_texts = []
@@ -127,24 +140,40 @@ def _tag_overlap_bonus(
         return 0.0
     bonus = 0.0
     first_meta = pending_results[0].meta if pending_results else None
-    tag_artist, tag_album, tag_composer, tag_work = _aggregated_tag_hints(pending_results)
+    tag_artist, tag_album, tag_composer, tag_work = _aggregated_tag_hints(
+        pending_results
+    )
     release_artist = example.artist or None
     release_album = example.title or None
-    primary_artist = tag_artist or (first_meta.album_artist or first_meta.artist if first_meta else None)
+    primary_artist = tag_artist or (
+        first_meta.album_artist or first_meta.artist if first_meta else None
+    )
     primary_album = tag_album or (first_meta.album if first_meta else None)
     if primary_artist:
         weight = 1.2 if tag_artist else 0.8
-        bonus += _weighted_overlap(daemon._token_overlap_ratio(primary_artist, release_artist), weight)
+        bonus += _weighted_overlap(
+            daemon._token_overlap_ratio(primary_artist, release_artist), weight
+        )
     if primary_album:
         weight = 1.2 if tag_album else 0.8
-        bonus += _weighted_overlap(daemon._token_overlap_ratio(primary_album, release_album), weight)
+        bonus += _weighted_overlap(
+            daemon._token_overlap_ratio(primary_album, release_album), weight
+        )
     if tag_composer:
-        bonus += _positive_weighted_overlap(daemon._token_overlap_ratio(tag_composer, release_artist), 0.9)
+        bonus += _positive_weighted_overlap(
+            daemon._token_overlap_ratio(tag_composer, release_artist), 0.9
+        )
     if tag_work:
-        bonus += _positive_weighted_overlap(daemon._token_overlap_ratio(tag_work, release_album), 0.8)
+        bonus += _positive_weighted_overlap(
+            daemon._token_overlap_ratio(tag_work, release_album), 0.8
+        )
     hint_artist, hint_album = daemon._path_based_hints(directory)
-    bonus += _weighted_overlap(daemon._token_overlap_ratio(hint_artist, release_artist), 0.5)
-    bonus += _weighted_overlap(daemon._token_overlap_ratio(hint_album, release_album), 0.5)
+    bonus += _weighted_overlap(
+        daemon._token_overlap_ratio(hint_artist, release_artist), 0.5
+    )
+    bonus += _weighted_overlap(
+        daemon._token_overlap_ratio(hint_album, release_album), 0.5
+    )
     return max(-0.05, min(0.05, bonus))
 
 
@@ -182,7 +211,9 @@ def _positive_weighted_overlap(ratio: Optional[float], weight: float) -> float:
     return _positive_overlap_delta(ratio) * weight
 
 
-def _aggregated_tag_hints(pending_results: list[PendingResult]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+def _aggregated_tag_hints(
+    pending_results: list[PendingResult],
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     artist_values: list[str] = []
     album_values: list[str] = []
     composer_values: list[str] = []

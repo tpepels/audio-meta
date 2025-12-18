@@ -16,7 +16,10 @@ class SingletonTargetOverridePlugin(PlanTransformPlugin):
                 continue
             meta = plan.meta
             is_classical = daemon.heuristics.adapt_metadata(meta)
-            override_target = daemon._plan_singleton_target(meta, ctx.release_home_dir, is_classical)
-            if override_target and not daemon._path_under_directory(meta.path, ctx.release_home_dir):
+            override_target = daemon._plan_singleton_target(
+                meta, ctx.release_home_dir, is_classical
+            )
+            if override_target and not daemon._path_under_directory(
+                meta.path, ctx.release_home_dir
+            ):
                 plan.target_path = override_target
-

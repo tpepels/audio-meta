@@ -30,16 +30,22 @@ class Organizer:
     ) -> None:
         self.settings = settings
         self.enabled = settings.enabled
-        default_root = library_settings.roots[0] if library_settings.roots else Path.cwd()
+        default_root = (
+            library_settings.roots[0] if library_settings.roots else Path.cwd()
+        )
         self.target_root = (settings.target_root or default_root).resolve()
         self.release_composers: Dict[str, Set[str]] = defaultdict(set)
         self.library_roots = [root.resolve() for root in library_settings.roots]
-        self.audio_extensions = {ext.lower() for ext in library_settings.include_extensions}
+        self.audio_extensions = {
+            ext.lower() for ext in library_settings.include_extensions
+        }
         self.cache = cache
         self._layout_cache: Dict[str, str] = {}
         self._unknown_labels = {UNKNOWN_ARTIST, UNKNOWN_ALBUM}
 
-    def canonical_target(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
+    def canonical_target(
+        self, meta: TrackMetadata, is_classical: bool
+    ) -> Optional[Path]:
         if not self.enabled:
             return None
         target_dir = self._build_directory(meta, is_classical)
@@ -139,7 +145,9 @@ class Organizer:
         truncated = f"{truncated_stem}{ellipsis}{suffix}"
         return target.with_name(truncated)
 
-    def _build_directory(self, meta: TrackMetadata, is_classical: bool) -> Optional[Path]:
+    def _build_directory(
+        self, meta: TrackMetadata, is_classical: bool
+    ) -> Optional[Path]:
         if is_classical:
             return self._classical_directory(meta)
         artist = self._safe(self._primary_artist(meta), UNKNOWN_ARTIST)
@@ -195,7 +203,9 @@ class Organizer:
         if self.cache:
             self.cache.set_release_layout(key, layout)
 
-    def _choose_classical_layout(self, meta: TrackMetadata, composer: str, performer: str) -> str:
+    def _choose_classical_layout(
+        self, meta: TrackMetadata, composer: str, performer: str
+    ) -> str:
         if not composer or composer == UNKNOWN_ARTIST:
             return "performer_album"
 
@@ -213,11 +223,17 @@ class Organizer:
             return "composer_album"
         return "composer_performer_album"
 
-    def _path_for_layout(self, layout: str, composer: str, performer: str, album: str) -> Path:
+    def _path_for_layout(
+        self, layout: str, composer: str, performer: str, album: str
+    ) -> Path:
         if layout == "composer_album":
             segments = [("composer", composer), ("album", album)]
         elif layout == "composer_performer_album":
-            segments = [("composer", composer), ("performer", performer), ("album", album)]
+            segments = [
+                ("composer", composer),
+                ("performer", performer),
+                ("album", album),
+            ]
         else:
             segments = [("performer", performer), ("album", album)]
         return self._build_path(segments)
@@ -236,7 +252,11 @@ class Organizer:
         if not value:
             return fallback
         cleaned = value.strip()
-        cleaned = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii")
+        cleaned = (
+            unicodedata.normalize("NFKD", cleaned)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
         cleaned = re.sub(r"[\\/]+", "-", cleaned)
         return cleaned or fallback
 
@@ -299,7 +319,9 @@ class Organizer:
         if not normalized:
             return value
         token = self._canonical_token(label_type, parent, normalized)
-        cached = self.cache.get_canonical_name(token) if (self.cache and token) else None
+        cached = (
+            self.cache.get_canonical_name(token) if (self.cache and token) else None
+        )
         if cached:
             return cached
         existing = self._find_existing_label(parent, normalized)
@@ -308,7 +330,9 @@ class Organizer:
             self.cache.set_canonical_name(token, canonical)
         return canonical
 
-    def _canonical_token(self, label_type: str, parent: Path, normalized_value: str) -> str:
+    def _canonical_token(
+        self, label_type: str, parent: Path, normalized_value: str
+    ) -> str:
         parent_token = ""
         try:
             rel = parent.relative_to(self.target_root)
@@ -317,7 +341,9 @@ class Organizer:
             parent_token = self._normalize_token(str(parent))
         return f"{label_type}:{parent_token}:{normalized_value}"
 
-    def _find_existing_label(self, parent: Path, normalized_value: str) -> Optional[str]:
+    def _find_existing_label(
+        self, parent: Path, normalized_value: str
+    ) -> Optional[str]:
         try:
             if not parent.exists():
                 return None
@@ -326,7 +352,10 @@ class Organizer:
         try:
             for child in parent.iterdir():
                 try:
-                    if child.is_dir() and self._normalize_token(child.name) == normalized_value:
+                    if (
+                        child.is_dir()
+                        and self._normalize_token(child.name) == normalized_value
+                    ):
                         return child.name
                 except OSError:
                     continue

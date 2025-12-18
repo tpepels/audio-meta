@@ -33,7 +33,11 @@ def run(auditor: LibraryAuditor) -> None:
         else:
             print("    Suggested target: (already in place or unknown)")
         while True:
-            choice = input("Action [k]eep/[m]ove/[d]elete/[i]ignore/[q]uit: ").strip().lower()
+            choice = (
+                input("Action [k]eep/[m]ove/[d]elete/[i]ignore/[q]uit: ")
+                .strip()
+                .lower()
+            )
             if choice in {"", "k"}:
                 break
             if choice == "q":
@@ -64,8 +68,9 @@ def run(auditor: LibraryAuditor) -> None:
                     print("File already missing.")
                 break
             if choice == "i":
-                auditor.cache.ignore_directory(entry.directory, "user ignored singleton")
+                auditor.cache.ignore_directory(
+                    entry.directory, "user ignored singleton"
+                )
                 print("Directory will be ignored in future single-file audits.")
                 break
             print("Invalid choice. Use k/m/d/i/q.")
-

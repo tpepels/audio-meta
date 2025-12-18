@@ -6,7 +6,12 @@ from typing import Any, Optional
 
 from audio_meta.daemon_types import PendingResult, ReleaseExample
 from audio_meta.directory_identity import path_based_hints, token_overlap_ratio
-from audio_meta.match_utils import combine_similarity, duration_similarity, normalize_match_text, title_similarity
+from audio_meta.match_utils import (
+    combine_similarity,
+    duration_similarity,
+    normalize_match_text,
+    title_similarity,
+)
 from audio_meta.models import TrackMetadata
 from audio_meta.providers.musicbrainz import ReleaseData, ReleaseTrack
 from audio_meta.release_scoring import adjust_release_scores
@@ -58,13 +63,17 @@ class _FixtureDaemon:
         match = re.search(r"(19|20)\d{2}", value)
         return int(match.group(0)) if match else None
 
-    def _token_overlap_ratio(self, expected: Optional[str], candidate: Optional[str]) -> float:
+    def _token_overlap_ratio(
+        self, expected: Optional[str], candidate: Optional[str]
+    ) -> float:
         return token_overlap_ratio(expected, candidate)
 
     def _path_based_hints(self, directory: Path) -> tuple[Optional[str], Optional[str]]:
         return path_based_hints(directory)
 
-    def _match_pending_to_release(self, meta: TrackMetadata, release: ReleaseData) -> Optional[float]:
+    def _match_pending_to_release(
+        self, meta: TrackMetadata, release: ReleaseData
+    ) -> Optional[float]:
         title = meta.title
         duration = meta.duration_seconds
         best = 0.0
@@ -79,7 +88,16 @@ class _FixtureDaemon:
             return None
         return best
 
-    def _adjust_release_scores(self, scores, release_examples, dir_track_count, dir_year, pending_results, directory, discogs_details):
+    def _adjust_release_scores(
+        self,
+        scores,
+        release_examples,
+        dir_track_count,
+        dir_year,
+        pending_results,
+        directory,
+        discogs_details,
+    ):
         return adjust_release_scores(
             self,
             scores=scores,
@@ -91,7 +109,12 @@ class _FixtureDaemon:
             discogs_details=discogs_details,
         )
 
-    def _release_track_entries(self, key: str, _release_examples: dict[str, ReleaseExample], discogs_details: dict[str, dict]):
+    def _release_track_entries(
+        self,
+        key: str,
+        _release_examples: dict[str, ReleaseExample],
+        discogs_details: dict[str, dict],
+    ):
         provider, release_id = self._split_release_key(key)
         if provider == "musicbrainz":
             release = self.musicbrainz.release_tracker.releases.get(release_id)
@@ -101,7 +124,9 @@ class _FixtureDaemon:
             for track in release.tracks:
                 if not track.title:
                     return None
-                entries.append((normalize_match_text(track.title), track.duration_seconds))
+                entries.append(
+                    (normalize_match_text(track.title), track.duration_seconds)
+                )
             return entries or None
         if provider == "discogs":
             details = discogs_details.get(key)
@@ -119,7 +144,12 @@ class _FixtureDaemon:
             return entries or None
         return None
 
-    def _canonical_release_signature(self, key: str, release_examples: dict[str, ReleaseExample], discogs_details: dict[str, dict]):
+    def _canonical_release_signature(
+        self,
+        key: str,
+        release_examples: dict[str, ReleaseExample],
+        discogs_details: dict[str, dict],
+    ):
         entries = self._release_track_entries(key, release_examples, discogs_details)
         if not entries:
             return None
@@ -130,10 +160,14 @@ class _FixtureDaemon:
             normalized.append((title, duration))
         return len(normalized), tuple(normalized)
 
-    def _auto_pick_equivalent_release(self, candidates, release_examples, discogs_details):
+    def _auto_pick_equivalent_release(
+        self, candidates, release_examples, discogs_details
+    ):
         signatures: dict[str, Any] = {}
         for key, _score in candidates:
-            sig = self._canonical_release_signature(key, release_examples, discogs_details)
+            sig = self._canonical_release_signature(
+                key, release_examples, discogs_details
+            )
             if sig is None:
                 return None
             signatures[key] = sig
@@ -200,10 +234,15 @@ class TestExportedReleaseSelectionFixtures(unittest.TestCase):
         for path in cases:
             with self.subTest(path=str(path)):
                 data = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(data.get("schema"), "audio-meta.release-selection-case.v1")
+                self.assertEqual(
+                    data.get("schema"), "audio-meta.release-selection-case.v1"
+                )
 
                 mb_releases = {
-                    rid: _load_release_data(rpayload) for rid, rpayload in (data.get("musicbrainz_releases") or {}).items()
+                    rid: _load_release_data(rpayload)
+                    for rid, rpayload in (
+                        data.get("musicbrainz_releases") or {}
+                    ).items()
                 }
                 daemon = _FixtureDaemon(mb_releases=mb_releases)
 
@@ -220,7 +259,9 @@ class TestExportedReleaseSelectionFixtures(unittest.TestCase):
                     meta.movement = meta_payload.get("movement")
                     meta.genre = meta_payload.get("genre")
                     meta.duration_seconds = meta_payload.get("duration_seconds")
-                    meta.musicbrainz_release_id = meta_payload.get("musicbrainz_release_id")
+                    meta.musicbrainz_release_id = meta_payload.get(
+                        "musicbrainz_release_id"
+                    )
                     meta.musicbrainz_track_id = meta_payload.get("musicbrainz_track_id")
                     meta.match_confidence = meta_payload.get("match_confidence")
                     meta.extra = dict(meta_payload.get("extra") or {})
@@ -234,9 +275,12 @@ class TestExportedReleaseSelectionFixtures(unittest.TestCase):
                     )
 
                 release_examples = {
-                    k: ReleaseExample(**v) for k, v in (data.get("release_examples") or {}).items()
+                    k: ReleaseExample(**v)
+                    for k, v in (data.get("release_examples") or {}).items()
                 }
-                scores = {k: float(v) for k, v in (data.get("release_scores") or {}).items()}
+                scores = {
+                    k: float(v) for k, v in (data.get("release_scores") or {}).items()
+                }
                 discogs_details = dict(data.get("discogs_details") or {})
 
                 expected = data.get("expected") or {}
@@ -266,10 +310,13 @@ class TestExportedReleaseSelectionFixtures(unittest.TestCase):
                     False,
                     False,
                 )
-                self.assertEqual(decision.best_release_id, expected.get("best_release_id"))
-                self.assertEqual(bool(decision.should_abort), bool(expected.get("should_abort")))
+                self.assertEqual(
+                    decision.best_release_id, expected.get("best_release_id")
+                )
+                self.assertEqual(
+                    bool(decision.should_abort), bool(expected.get("should_abort"))
+                )
 
 
 if __name__ == "__main__":
     unittest.main()
-

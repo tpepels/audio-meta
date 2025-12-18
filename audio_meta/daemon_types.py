@@ -63,4 +63,3 @@ class PendingResult:
     result: Optional[LookupResult]
     matched: bool
     existing_tags: dict[str, Optional[str]] = field(default_factory=dict)
-

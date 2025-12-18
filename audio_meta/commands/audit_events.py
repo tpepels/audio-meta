@@ -22,7 +22,9 @@ def run(
             since_id = int(since_value)
         else:
             since_ts = since_value
-    events = cache.list_audit_events(limit=limit, event=event, since_id=since_id, since=since_ts)
+    events = cache.list_audit_events(
+        limit=limit, event=event, since_id=since_id, since=since_ts
+    )
     if not events:
         print("No audit events found.")
         return

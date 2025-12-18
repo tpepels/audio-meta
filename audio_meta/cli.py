@@ -105,16 +105,26 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("scan", help="Run a one-off scan")
     subparsers.add_parser("daemon", help="Start the watchdog daemon")
-    subparsers.add_parser("run", help="Run a scan followed by an audit with automatic fixes")
-    audit_parser = subparsers.add_parser("audit", help="Report directories containing mixed album/artist metadata")
+    subparsers.add_parser(
+        "run", help="Run a scan followed by an audit with automatic fixes"
+    )
+    audit_parser = subparsers.add_parser(
+        "audit", help="Report directories containing mixed album/artist metadata"
+    )
     audit_parser.add_argument(
         "--fix",
         action="store_true",
         help="Automatically move files whose tags indicate a different artist/album",
     )
-    events_parser = subparsers.add_parser("audit-events", help="Show recent pipeline audit events")
-    events_parser.add_argument("--limit", type=int, default=50, help="Number of events to show (max 1000)")
-    events_parser.add_argument("--event", default=None, help="Filter by event type (e.g. scan_complete)")
+    events_parser = subparsers.add_parser(
+        "audit-events", help="Show recent pipeline audit events"
+    )
+    events_parser.add_argument(
+        "--limit", type=int, default=50, help="Number of events to show (max 1000)"
+    )
+    events_parser.add_argument(
+        "--event", default=None, help="Filter by event type (e.g. scan_complete)"
+    )
     events_parser.add_argument(
         "--since",
         default=None,
@@ -137,7 +147,9 @@ def main() -> None:
         "singletons",
         help="Interactively review directories that contain a single audio file",
     )
-    doctor_parser = subparsers.add_parser("doctor", help="Run basic config/cache/pipeline checks")
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Run basic config/cache/pipeline checks"
+    )
     doctor_parser.add_argument(
         "--providers",
         action="store_true",
@@ -147,8 +159,12 @@ def main() -> None:
         "export-testcase",
         help="Export a deterministic testcase JSON for release selection/scoring",
     )
-    export_parser.add_argument("directory", type=Path, help="Directory (or disc subfolder) to export")
-    export_parser.add_argument("--out", type=Path, default=Path("release_selection_case.json"))
+    export_parser.add_argument(
+        "directory", type=Path, help="Directory (or disc subfolder) to export"
+    )
+    export_parser.add_argument(
+        "--out", type=Path, default=Path("release_selection_case.json")
+    )
     export_parser.add_argument(
         "--expected-release",
         default=None,
@@ -205,7 +221,16 @@ def main() -> None:
         cache.close()
     app: AudioMetaApp | None = None
     daemon: AudioMetaDaemon | None = None
-    uses_app = args.command in {"scan", "daemon", "run", "audit", "audit-events", "singletons", "doctor", "export-testcase"}
+    uses_app = args.command in {
+        "scan",
+        "daemon",
+        "run",
+        "audit",
+        "audit-events",
+        "singletons",
+        "doctor",
+        "export-testcase",
+    }
     if uses_app:
         app = AudioMetaApp.create(settings)
     if args.command in {"scan", "daemon", "run", "export-testcase"} and app:
@@ -239,7 +264,10 @@ def main() -> None:
             case "singletons":
                 cmd_singletons.run(app.get_auditor())
             case "doctor":
-                report = cmd_doctor.run(settings, validate_providers_online=getattr(args, "providers", False))
+                report = cmd_doctor.run(
+                    settings,
+                    validate_providers_online=getattr(args, "providers", False),
+                )
                 for line in report.checks:
                     print(line)
                 if not report.ok:

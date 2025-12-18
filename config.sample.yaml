@@ -21,7 +21,7 @@ classical:
     - baroque
     - romantic
     - opera
-  min_duration_seconds: 480
+  min_duration_seconds: 120
   title_markers:
     - symphony
     - concerto
@@ -31,6 +31,21 @@ classical:
 daemon:
   worker_concurrency: 4
   cache_path: ./cache/cache.sqlite3
+  # Safety guard: if an AcoustID fingerprint match disagrees with existing tags (album/album_artist),
+  # treat it as suspicious and defer the directory for manual confirmation.
+  # - threshold is token-overlap ratio (0..1); higher is stricter.
+  # - action: "defer" (default) or "ignore" (discard the fingerprint match and fall back to other matchers).
+  fingerprint_mismatch_threshold: 0.35
+  fingerprint_mismatch_action: defer
+  # Safety guard for classical music: defer when performer credits are missing or inconsistent across tracks.
+  # - min_tracks: only apply to directories with at least this many classical tracks.
+  # - min_coverage: fraction of classical tracks that must have a usable performer hint.
+  # - min_consensus: fraction of hinted tracks that must agree on the dominant performer string.
+  # - action: "defer" (default) or "skip" (do nothing and record a skip reason).
+  classical_credits_min_tracks: 3
+  classical_credits_min_coverage: 0.6
+  classical_credits_min_consensus: 0.7
+  classical_credits_action: defer
   # Optional: disable built-in / entry-point pipeline plugins by `name`.
   # Examples:
   # pipeline_disable:

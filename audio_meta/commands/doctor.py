@@ -55,4 +55,3 @@ def run(
         app.close()
 
     return DoctorReport(ok=ok, checks=checks)
-

@@ -27,5 +27,7 @@ class DefaultReleaseDecisionPlugin(ReleaseDecisionPlugin):
             ctx.forced_release_score,
             ctx.force_prompt,
             ctx.release_summary_printed,
-            require_confirmation=bool(getattr(ctx, "require_release_confirmation", False)),
+            require_confirmation=bool(
+                getattr(ctx, "require_release_confirmation", False)
+            ),
         )

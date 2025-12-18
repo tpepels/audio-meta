@@ -134,7 +134,9 @@ class TestReleaseScoringTagHints(unittest.TestCase):
             directory=Path("/music/Mixed/Etudes"),
             discogs_details={},
         )
-        self.assertAlmostEqual(adjusted["discogs:chopin"], adjusted["discogs:bach"], places=6)
+        self.assertAlmostEqual(
+            adjusted["discogs:chopin"], adjusted["discogs:bach"], places=6
+        )
 
     def test_work_hint_biases_toward_matching_release_title(self) -> None:
         daemon = _DaemonForScoring()
@@ -186,13 +188,19 @@ class TestReleaseScoringTagHints(unittest.TestCase):
                 meta=TrackMetadata(path=Path("/music/01.flac")),
                 result=None,
                 matched=False,
-                existing_tags={"album_artist": "Maurizio Pollini", "album": "Études op. 10 & op. 25"},
+                existing_tags={
+                    "album_artist": "Maurizio Pollini",
+                    "album": "Études op. 10 & op. 25",
+                },
             ),
             PendingResult(
                 meta=TrackMetadata(path=Path("/music/02.flac")),
                 result=None,
                 matched=False,
-                existing_tags={"album_artist": "Murray Perahia", "album": "Études op. 10 & op. 25"},
+                existing_tags={
+                    "album_artist": "Murray Perahia",
+                    "album": "Études op. 10 & op. 25",
+                },
             ),
         ]
         release_examples = {
@@ -226,7 +234,9 @@ class TestReleaseScoringTagHints(unittest.TestCase):
             directory=Path("/music/Mixed/Etudes"),
             discogs_details={},
         )
-        self.assertAlmostEqual(adjusted["discogs:pollini"], adjusted["discogs:perahia"], places=6)
+        self.assertAlmostEqual(
+            adjusted["discogs:pollini"], adjusted["discogs:perahia"], places=6
+        )
 
 
 if __name__ == "__main__":

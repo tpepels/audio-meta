@@ -19,6 +19,9 @@ This project processes a music library by running each directory through a plugi
   - MusicBrainz: `audio_meta/pipeline/plugins/candidates_musicbrainz.py`
   - Discogs: `audio_meta/pipeline/plugins/candidates_discogs.py`
 - **Release selection**: `audio_meta/pipeline/plugins/release_decision.py` (uses `audio_meta/release_selection.py`)
+- **Safety gates (defer/confirm)**:
+  - Suspicious fingerprint vs tags: `audio_meta/daemon.py`
+  - Classical credits review: `audio_meta/daemon.py`
 - **Singleton handling**: `audio_meta/pipeline/plugins/singleton_handler.py` (uses `audio_meta/release_home.py`)
 - **Planning (compute intended writes/moves)**: `audio_meta/pipeline/plugins/planner.py`
 - **Unmatched policy / confirmation**: `audio_meta/pipeline/plugins/unmatched_policy.py`
@@ -33,4 +36,3 @@ This project processes a music library by running each directory through a plugi
 - `daemon.pipeline_order`: per-stage explicit plugin ordering; any plugins not listed still run after the specified ones.
 
 These are intended for experimentation and troubleshooting; the default order is what the project is tuned for.
-

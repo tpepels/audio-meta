@@ -18,13 +18,23 @@ class DefaultUnmatchedPolicyPlugin(UnmatchedPolicyPlugin):
         services = daemon.services
         if not ctx.best_release_key:
             return UnmatchedDecision(should_abort=False)
-        if daemon.defer_prompts and not ctx.force_prompt and not daemon._processing_deferred:
+        if (
+            daemon.defer_prompts
+            and not ctx.force_prompt
+            and not daemon._processing_deferred
+        ):
             services.schedule_deferred_directory(ctx.directory, "unmatched_tracks")
             return UnmatchedDecision(should_abort=True)
         if daemon.interactive:
-            services.log_unmatched_candidates(ctx.directory, ctx.best_release_key, ctx.unmatched)
-            if not services.prompt_on_unmatched_release(ctx.directory, ctx.best_release_key, ctx.unmatched):
-                services.record_skip(ctx.directory, "User skipped due to unmatched tracks")
+            services.log_unmatched_candidates(
+                ctx.directory, ctx.best_release_key, ctx.unmatched
+            )
+            if not services.prompt_on_unmatched_release(
+                ctx.directory, ctx.best_release_key, ctx.unmatched
+            ):
+                services.record_skip(
+                    ctx.directory, "User skipped due to unmatched tracks"
+                )
                 logger.warning(
                     "Skipping %s because %d tracks did not match release %s",
                     ctx.directory,

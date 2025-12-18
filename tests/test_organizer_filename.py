@@ -10,7 +10,9 @@ class TestOrganizerFilename(unittest.TestCase):
     def setUp(self) -> None:
         self.organizer = Organizer(
             OrganizerSettings(enabled=True),
-            LibrarySettings(roots=[Path("/music")], include_extensions=[".mp3"], exclude_patterns=[]),
+            LibrarySettings(
+                roots=[Path("/music")], include_extensions=[".mp3"], exclude_patterns=[]
+            ),
         )
 
     def test_build_filename_parses_tracknumber_string(self) -> None:
@@ -26,4 +28,3 @@ class TestOrganizerFilename(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

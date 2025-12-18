@@ -56,7 +56,9 @@ def _validate_acoustid(api_key: str) -> None:
 
 def _validate_musicbrainz(useragent: str) -> None:
     if not useragent or "example.com" in useragent:
-        raise RuntimeError("musicbrainz_useragent must include a real contact (e.g. email or URL)")
+        raise RuntimeError(
+            "musicbrainz_useragent must include a real contact (e.g. email or URL)"
+        )
     musicbrainzngs.set_useragent("audio-meta", "0.1", contact=useragent)
     try:
         musicbrainzngs.search_recordings(artist="Miles Davis", limit=1)
@@ -67,7 +69,9 @@ def _validate_musicbrainz(useragent: str) -> None:
 def _validate_discogs(token: Optional[str], useragent: str) -> None:
     if not token:
         return
-    url = f"https://api.discogs.com/database/search?token={token}&type=release&per_page=1"
+    url = (
+        f"https://api.discogs.com/database/search?token={token}&type=release&per_page=1"
+    )
     req = urllib.request.Request(url, headers={"User-Agent": useragent})
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:

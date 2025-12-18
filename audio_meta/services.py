@@ -28,9 +28,18 @@ class AudioMetaServices:
         self.daemon._record_skip(directory, reason)
 
     def apply_musicbrainz_release_selection(
-        self, directory: Path, release_id: str, pending_results: list[PendingResult], *, force: bool = False
+        self,
+        directory: Path,
+        release_id: str,
+        pending_results: list[PendingResult],
+        *,
+        force: bool = False,
     ) -> bool:
-        return bool(self.daemon._apply_musicbrainz_release_selection(directory, release_id, pending_results, force=force))
+        return bool(
+            self.daemon._apply_musicbrainz_release_selection(
+                directory, release_id, pending_results, force=force
+            )
+        )
 
     def fetch_musicbrainz_release(self, release_id: str) -> Optional[Any]:
         release_ref = self.daemon.musicbrainz.release_tracker.releases.get(release_id)
@@ -41,7 +50,9 @@ class AudioMetaServices:
             self.daemon.musicbrainz.release_tracker.releases[release_id] = release_ref
         return release_ref
 
-    def apply_discogs_release_details(self, pending_results: list[PendingResult], details: dict) -> None:
+    def apply_discogs_release_details(
+        self, pending_results: list[PendingResult], details: dict
+    ) -> None:
         self.daemon._apply_discogs_release_details(pending_results, details)
 
     def discogs_release_artist(self, details: dict) -> Optional[str]:
@@ -81,12 +92,24 @@ class AudioMetaServices:
         pending_results: list[PendingResult],
     ) -> None:
         self.daemon._print_release_selection_summary(
-            directory, provider, release_id, album, artist, track_count, disc_count, pending_results
+            directory,
+            provider,
+            release_id,
+            album,
+            artist,
+            track_count,
+            disc_count,
+            pending_results,
         )
 
-    def prompt_on_unmatched_release(self, directory: Path, release_key: str, unmatched: list[PendingResult]) -> bool:
-        return bool(self.daemon._prompt_on_unmatched_release(directory, release_key, unmatched))
+    def prompt_on_unmatched_release(
+        self, directory: Path, release_key: str, unmatched: list[PendingResult]
+    ) -> bool:
+        return bool(
+            self.daemon._prompt_on_unmatched_release(directory, release_key, unmatched)
+        )
 
-    def log_unmatched_candidates(self, directory: Path, release_key: str, unmatched: list[PendingResult]) -> None:
+    def log_unmatched_candidates(
+        self, directory: Path, release_key: str, unmatched: list[PendingResult]
+    ) -> None:
         self.daemon._log_unmatched_candidates(directory, release_key, unmatched)
-

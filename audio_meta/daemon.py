@@ -15,7 +15,14 @@ from watchdog.observers import Observer
 
 from .daemon_types import DryRunRecorder, PendingResult, ReleaseExample
 from .assignment import best_assignment_max_score
-from .match_utils import combine_similarity, duration_similarity, normalize_match_text, normalize_title_for_match, parse_discogs_duration, title_similarity
+from .match_utils import (
+    combine_similarity,
+    duration_similarity,
+    normalize_match_text,
+    normalize_title_for_match,
+    parse_discogs_duration,
+    title_similarity,
+)
 from .pipeline import (
     ProcessingPipeline,
     TrackEnrichmentContext,
@@ -31,7 +38,12 @@ from .config import Settings
 from .models import TrackMetadata
 from .organizer import Organizer
 from .providers.discogs import DiscogsClient
-from .providers.musicbrainz import LookupResult, MusicBrainzClient, ReleaseData, ReleaseMatch
+from .providers.musicbrainz import (
+    LookupResult,
+    MusicBrainzClient,
+    ReleaseData,
+    ReleaseMatch,
+)
 from .scanner import DirectoryBatch, LibraryScanner
 from .tagging import TagWriter
 from .cache import MetadataCache
@@ -70,18 +82,24 @@ class AudioMetaDaemon:
         self.cache = cache or MetadataCache(settings.daemon.cache_path)
         self.services = AudioMetaServices(self)
         self.scanner = scanner or LibraryScanner(settings.library)
-        self.musicbrainz = musicbrainz or MusicBrainzClient(settings.providers, cache=self.cache)
+        self.musicbrainz = musicbrainz or MusicBrainzClient(
+            settings.providers, cache=self.cache
+        )
         self.discogs = discogs
         self.heuristics = ClassicalHeuristics(settings.classical)
         self.tag_writer = TagWriter()
-        self.organizer = Organizer(settings.organizer, settings.library, cache=self.cache)
+        self.organizer = Organizer(
+            settings.organizer, settings.library, cache=self.cache
+        )
         self.pipeline = ProcessingPipeline(
             disabled_plugins=set(settings.daemon.pipeline_disable),
             plugin_order=dict(settings.daemon.pipeline_order),
         )
         self.queue: asyncio.Queue[DirectoryBatch] = asyncio.Queue()
         self.observer: Observer | None = None
-        self.dry_run_recorder = DryRunRecorder(dry_run_output) if dry_run_output else None
+        self.dry_run_recorder = (
+            DryRunRecorder(dry_run_output) if dry_run_output else None
+        )
         self.interactive = interactive
         self.release_cache_enabled = release_cache_enabled
         # Always persist "needs user input" decisions so daemon mode can queue them,
@@ -133,7 +151,12 @@ class AudioMetaDaemon:
             await self._stop_workers(workers)
 
     def _bootstrap_watchdog(self, loop: asyncio.AbstractEventLoop) -> None:
-        handler = WatchHandler(self.queue, self.settings.library.include_extensions, self.scanner, loop=loop)
+        handler = WatchHandler(
+            self.queue,
+            self.settings.library.include_extensions,
+            self.scanner,
+            loop=loop,
+        )
         observer = Observer()
         for root in self.settings.library.roots:
             observer.schedule(handler, str(root), recursive=True)
@@ -154,21 +177,32 @@ class AudioMetaDaemon:
             batch = await self.queue.get()
             try:
                 if self.cache.is_directory_ignored(batch.directory):
-                    logger.info("Skipping ignored directory %s", self._display_path(batch.directory))
+                    logger.info(
+                        "Skipping ignored directory %s",
+                        self._display_path(batch.directory),
+                    )
                 else:
-                    await asyncio.get_running_loop().run_in_executor(None, self._process_directory, batch)
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, self._process_directory, batch
+                    )
             except Exception:  # pragma: no cover - logged and ignored
-                logger.exception("Worker %s failed to process %s", worker_id, batch.directory)
+                logger.exception(
+                    "Worker %s failed to process %s", worker_id, batch.directory
+                )
             finally:
                 self.queue.task_done()
 
-    def _process_directory(self, batch: DirectoryBatch, force_prompt: bool = False) -> None:
+    def _process_directory(
+        self, batch: DirectoryBatch, force_prompt: bool = False
+    ) -> None:
         prepared = self._prepare_album_batch(batch, force_prompt=force_prompt)
         if not prepared:
             return
         batch = prepared
         is_singleton = self._is_singleton_directory(batch)
-        logger.debug("Processing directory %s with %d files", batch.directory, len(batch.files))
+        logger.debug(
+            "Processing directory %s with %d files", batch.directory, len(batch.files)
+        )
         directory_hash = self._calculate_directory_hash(batch.directory, batch.files)
         dir_ctx = DirectoryContext(
             daemon=self,
@@ -207,7 +241,12 @@ class AudioMetaDaemon:
                 )
             )
             if self.pipeline.should_skip_track(
-                TrackSkipContext(daemon=self, directory=batch.directory, file_path=file_path, directory_ctx=dir_ctx)
+                TrackSkipContext(
+                    daemon=self,
+                    directory=batch.directory,
+                    file_path=file_path,
+                    directory_ctx=dir_ctx,
+                )
             ):
                 continue
             pre_enrich_metas.append(
@@ -251,8 +290,15 @@ class AudioMetaDaemon:
             if result and meta.extra.get("MATCH_SOURCE") == "acoustid":
                 if self._fingerprint_conflicts_with_tags(existing_tags, meta):
                     dir_ctx.require_release_confirmation = True
-                    dir_ctx.diagnostics.setdefault("fingerprint_conflicts", []).append(str(meta.path))
-                    action = getattr(self.settings.daemon, "fingerprint_mismatch_action", "defer") or "defer"
+                    dir_ctx.diagnostics.setdefault("fingerprint_conflicts", []).append(
+                        str(meta.path)
+                    )
+                    action = (
+                        getattr(
+                            self.settings.daemon, "fingerprint_mismatch_action", "defer"
+                        )
+                        or "defer"
+                    )
                     if action == "ignore":
                         meta.title = snapshot["title"]
                         meta.album = snapshot["album"]
@@ -270,8 +316,14 @@ class AudioMetaDaemon:
                         meta.extra = dict(snapshot["extra"])
                         result = None
                     else:
-                        if self.defer_prompts and not force_prompt and not self._processing_deferred:
-                            self._schedule_deferred_directory(batch.directory, "suspicious_fingerprint")
+                        if (
+                            self.defer_prompts
+                            and not force_prompt
+                            and not self._processing_deferred
+                        ):
+                            self._schedule_deferred_directory(
+                                batch.directory, "suspicious_fingerprint"
+                            )
                             return
             pending_results.append(
                 PendingResult(
@@ -284,19 +336,35 @@ class AudioMetaDaemon:
             # Release candidates are aggregated later via pipeline candidate sources.
 
         if self._should_review_classical_credits(pre_enrich_metas):
-            action = getattr(self.settings.daemon, "classical_credits_action", "defer") or "defer"
+            action = (
+                getattr(self.settings.daemon, "classical_credits_action", "defer")
+                or "defer"
+            )
             if self.interactive and (force_prompt or self._processing_deferred):
-                if not self._confirm_classical_credits(batch.directory, pre_enrich_metas):
-                    self._record_skip(batch.directory, "Classical performer credits need review")
+                if not self._confirm_classical_credits(
+                    batch.directory, pre_enrich_metas
+                ):
+                    self._record_skip(
+                        batch.directory, "Classical performer credits need review"
+                    )
                     return
-            elif action == "defer" and self.defer_prompts and not force_prompt and not self._processing_deferred:
+            elif (
+                action == "defer"
+                and self.defer_prompts
+                and not force_prompt
+                and not self._processing_deferred
+            ):
                 self._schedule_deferred_directory(batch.directory, "classical_credits")
                 return
             else:
-                self._record_skip(batch.directory, "Classical performer credits need review")
+                self._record_skip(
+                    batch.directory, "Classical performer credits need review"
+                )
                 return
         if not release_scores and dir_ctx.discogs_release_details:
-            self._apply_discogs_release_details(pending_results, dir_ctx.discogs_release_details)
+            self._apply_discogs_release_details(
+                pending_results, dir_ctx.discogs_release_details
+            )
 
         dir_ctx.pending_results = pending_results
         dir_ctx.release_scores = release_scores
@@ -342,26 +410,44 @@ class AudioMetaDaemon:
             self.pipeline.apply_plan(PlanApplyContext(daemon=self, plan=plan))
         self.pipeline.complete_directory(dir_ctx, applied_plans=True)
 
-    def _fingerprint_conflicts_with_tags(self, existing_tags: dict[str, Optional[str]], meta: TrackMetadata) -> bool:
-        threshold = float(getattr(self.settings.daemon, "fingerprint_mismatch_threshold", 0.35) or 0.35)
+    def _fingerprint_conflicts_with_tags(
+        self, existing_tags: dict[str, Optional[str]], meta: TrackMetadata
+    ) -> bool:
+        threshold = float(
+            getattr(self.settings.daemon, "fingerprint_mismatch_threshold", 0.35)
+            or 0.35
+        )
         tag_album = existing_tags.get("album")
-        tag_album_artist = existing_tags.get("album_artist") or existing_tags.get("albumartist")
+        tag_album_artist = existing_tags.get("album_artist") or existing_tags.get(
+            "albumartist"
+        )
         if not tag_album and not tag_album_artist:
             return False
         album_mismatch = False
         artist_mismatch = False
         if tag_album and meta.album:
-            album_mismatch = self._token_overlap_ratio(tag_album, meta.album) < threshold
+            album_mismatch = (
+                self._token_overlap_ratio(tag_album, meta.album) < threshold
+            )
         if tag_album_artist and meta.album_artist:
-            artist_mismatch = self._token_overlap_ratio(tag_album_artist, meta.album_artist) < threshold
+            artist_mismatch = (
+                self._token_overlap_ratio(tag_album_artist, meta.album_artist)
+                < threshold
+            )
         if tag_album and tag_album_artist:
             return album_mismatch and artist_mismatch
         return album_mismatch or artist_mismatch
 
     def _should_review_classical_credits(self, metas: list[TrackMetadata]) -> bool:
-        min_tracks = int(getattr(self.settings.daemon, "classical_credits_min_tracks", 3) or 3)
-        min_coverage = float(getattr(self.settings.daemon, "classical_credits_min_coverage", 0.6) or 0.6)
-        min_consensus = float(getattr(self.settings.daemon, "classical_credits_min_consensus", 0.7) or 0.7)
+        min_tracks = int(
+            getattr(self.settings.daemon, "classical_credits_min_tracks", 3) or 3
+        )
+        min_coverage = float(
+            getattr(self.settings.daemon, "classical_credits_min_coverage", 0.6) or 0.6
+        )
+        min_consensus = float(
+            getattr(self.settings.daemon, "classical_credits_min_consensus", 0.7) or 0.7
+        )
 
         stats = self._classical_credits_stats(metas)
         if stats["classical_tracks"] < min_tracks:
@@ -425,13 +511,17 @@ class AudioMetaDaemon:
             "top_hints": top[:5],
         }
 
-    def _confirm_classical_credits(self, directory: Path, metas: list[TrackMetadata]) -> bool:
+    def _confirm_classical_credits(
+        self, directory: Path, metas: list[TrackMetadata]
+    ) -> bool:
         try:
             display = self._display_path(directory)
             stats = self._classical_credits_stats(metas)
             print(f"\nClassical credits check for {display}:")
             print(f"- Classical tracks: {stats['classical_tracks']}/{len(metas)}")
-            print(f"- Performer hint coverage: {stats['coverage']:.0%} ({stats['hinted_tracks']} hinted, {stats['missing_hints']} missing)")
+            print(
+                f"- Performer hint coverage: {stats['coverage']:.0%} ({stats['hinted_tracks']} hinted, {stats['missing_hints']} missing)"
+            )
             if stats["consensus"] is not None:
                 print(f"- Performer hint consensus: {float(stats['consensus']):.0%}")
             top = list(stats["top_hints"])
@@ -454,7 +544,9 @@ class AudioMetaDaemon:
             try:
                 supplement = self.discogs.supplement(meta)
                 if supplement:
-                    result = LookupResult(meta, score=max(result.score, supplement.score))
+                    result = LookupResult(
+                        meta, score=max(result.score, supplement.score)
+                    )
             except Exception:
                 logger.exception("Discogs supplement failed for %s", meta.path)
         if not result and self.discogs:
@@ -556,7 +648,9 @@ class AudioMetaDaemon:
         release_home_dir: Path,
         is_classical: bool,
     ) -> Optional[Path]:
-        return release_home_logic.plan_singleton_target(self, meta, release_home_dir, is_classical)
+        return release_home_logic.plan_singleton_target(
+            self, meta, release_home_dir, is_classical
+        )
 
     def _path_under_directory(self, path: Path, directory: Path) -> bool:
         try:
@@ -574,7 +668,10 @@ class AudioMetaDaemon:
         try:
             self._process_directory(batch, force_prompt=True)
         except Exception:  # pragma: no cover - logged upstream
-            logger.warning("Failed to reprocess %s after singleton move", self._display_path(directory))
+            logger.warning(
+                "Failed to reprocess %s after singleton move",
+                self._display_path(directory),
+            )
 
     def _schedule_deferred_directory(self, directory: Path, reason: str) -> None:
         deferred_logic.schedule_directory(self, directory, reason)
@@ -601,15 +698,19 @@ class AudioMetaDaemon:
                 cleaned[key] = value
         return cleaned
 
-    def _apply_tag_hints(self, meta: TrackMetadata, tags: dict[str, Optional[str]]) -> None:
+    def _apply_tag_hints(
+        self, meta: TrackMetadata, tags: dict[str, Optional[str]]
+    ) -> None:
         if not tags:
             return
+
         def assign(attr: str, key: str) -> None:
             if getattr(meta, attr, None):
                 return
             value = self._prepare_tag_value(tags.get(key))
             if value:
                 setattr(meta, attr, value)
+
         def assign_list(attr: str, key: str) -> None:
             if getattr(meta, attr, None):
                 return
@@ -620,6 +721,7 @@ class AudioMetaDaemon:
             cleaned = [p for p in parts if p]
             if cleaned:
                 setattr(meta, attr, cleaned)
+
         assign("title", "title")
         assign("album", "album")
         assign("artist", "artist")
@@ -685,7 +787,9 @@ class AudioMetaDaemon:
     ) -> Optional[str]:
         signatures: dict[str, tuple[int, tuple[tuple[str, Optional[int]], ...]]] = {}
         for key, _ in candidates:
-            signature = self._canonical_release_signature(key, release_examples, discogs_details)
+            signature = self._canonical_release_signature(
+                key, release_examples, discogs_details
+            )
             if signature is None:
                 return None
             signatures[key] = signature
@@ -717,7 +821,9 @@ class AudioMetaDaemon:
             if provider != "musicbrainz" or not release_id:
                 continue
             release_key = self._release_key(provider, release_id)
-            release_home, home_count = self._release_home_for_key(release_key, directory, current_count)
+            release_home, home_count = self._release_home_for_key(
+                release_key, directory, current_count
+            )
             if not release_home or home_count <= 0:
                 continue
             example = release_examples.get(key)
@@ -745,7 +851,9 @@ class AudioMetaDaemon:
                 if cached_hash and current_hash and cached_hash != current_hash:
                     self.cache.delete_release_home(release_key)
                 else:
-                    return candidate, int(cached_count or self._count_audio_files(candidate))
+                    return candidate, int(
+                        cached_count or self._count_audio_files(candidate)
+                    )
             elif not candidate.exists():
                 self.cache.delete_release_home(release_key)
         provider, plain = self._split_release_key(release_key)
@@ -791,7 +899,9 @@ class AudioMetaDaemon:
             for track in release_data.tracks:
                 if not track.title:
                     return None
-                entries.append((normalize_match_text(track.title), track.duration_seconds))
+                entries.append(
+                    (normalize_match_text(track.title), track.duration_seconds)
+                )
             return entries
         if provider == "discogs":
             details = discogs_details.get(key)
@@ -812,11 +922,18 @@ class AudioMetaDaemon:
                 title = track.get("title")
                 if not title:
                     return None
-                entries.append((normalize_match_text(title), parse_discogs_duration(track.get("duration"))))
+                entries.append(
+                    (
+                        normalize_match_text(title),
+                        parse_discogs_duration(track.get("duration")),
+                    )
+                )
             return entries or None
         return None
 
-    def _match_pending_to_release(self, meta: TrackMetadata, release: ReleaseData) -> Optional[float]:
+    def _match_pending_to_release(
+        self, meta: TrackMetadata, release: ReleaseData
+    ) -> Optional[float]:
         title = meta.title or guess_metadata_from_path(meta.path).title
         duration = meta.duration_seconds
         if duration is None:
@@ -845,7 +962,9 @@ class AudioMetaDaemon:
         if not release_id:
             return
 
-        debug_details = bool(getattr(self.settings.daemon, "debug_unmatched", False)) or logger.isEnabledFor(logging.DEBUG)
+        debug_details = bool(
+            getattr(self.settings.daemon, "debug_unmatched", False)
+        ) or logger.isEnabledFor(logging.DEBUG)
 
         def mb_track_score_breakdown(
             meta: TrackMetadata,
@@ -856,7 +975,11 @@ class AudioMetaDaemon:
             track_number: Optional[int],
             disc_number: Optional[int],
         ) -> tuple[float, dict[str, float | int | str | None]]:
-            if meta.musicbrainz_track_id and track.recording_id and meta.musicbrainz_track_id == track.recording_id:
+            if (
+                meta.musicbrainz_track_id
+                and track.recording_id
+                and meta.musicbrainz_track_id == track.recording_id
+            ):
                 return 1.0, {"recording_id_match": 1.0}
             score = 0.0
             components: dict[str, float | int | str | None] = {}
@@ -890,7 +1013,9 @@ class AudioMetaDaemon:
                 score += 0.2 * ratio
                 components["title_similarity"] = ratio
                 components["title_score"] = 0.2 * ratio
-            dur_ratio = duration_similarity(meta.duration_seconds, track.duration_seconds)
+            dur_ratio = duration_similarity(
+                meta.duration_seconds, track.duration_seconds
+            )
             if dur_ratio is not None:
                 score += 0.05 * dur_ratio
                 components["duration_similarity"] = float(dur_ratio)
@@ -907,7 +1032,11 @@ class AudioMetaDaemon:
             score = 0.0
             components: dict[str, float | int | str | None] = {}
             position = track.get("position")
-            pos_num = self.discogs._parse_track_number(position) if self.discogs and isinstance(position, str) else None
+            pos_num = (
+                self.discogs._parse_track_number(position)
+                if self.discogs and isinstance(position, str)
+                else None
+            )
             if isinstance(track_number, int) and isinstance(pos_num, int):
                 diff = abs(pos_num - track_number)
                 components["track_number_diff"] = diff
@@ -984,8 +1113,12 @@ class AudioMetaDaemon:
                             track,
                             title=title,
                             title_norm=title_norm,
-                            track_number=track_number if isinstance(track_number, int) else None,
-                            disc_number=disc_number if isinstance(disc_number, int) else None,
+                            track_number=track_number
+                            if isinstance(track_number, int)
+                            else None,
+                            disc_number=disc_number
+                            if isinstance(disc_number, int)
+                            else None,
                         )
                         candidates.append(
                             {
@@ -997,7 +1130,9 @@ class AudioMetaDaemon:
                                 "components": components,
                             }
                         )
-                    candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+                    candidates.sort(
+                        key=lambda c: float(c.get("score") or 0.0), reverse=True
+                    )
                     payload["unmatched"].append(
                         {
                             "file": str(meta.path),
@@ -1023,7 +1158,10 @@ class AudioMetaDaemon:
                             "top_candidates": candidates[:5],
                         }
                     )
-                logger.debug("Unmatched diagnostics (musicbrainz):\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
+                logger.debug(
+                    "Unmatched diagnostics (musicbrainz):\n%s",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
 
             for pending in unmatched[:5]:
                 meta = pending.meta
@@ -1043,13 +1181,19 @@ class AudioMetaDaemon:
                         track,
                         title=title,
                         title_norm=title_norm,
-                        track_number=track_number if isinstance(track_number, int) else None,
-                        disc_number=disc_number if isinstance(disc_number, int) else None,
+                        track_number=track_number
+                        if isinstance(track_number, int)
+                        else None,
+                        disc_number=disc_number
+                        if isinstance(disc_number, int)
+                        else None,
                     )
                     label = f"D{track.disc_number or '?'}:{track.number or '?'} {track.title or '<untitled>'}"
                     candidates.append((score, label))
                 candidates.sort(key=lambda x: x[0], reverse=True)
-                top = ", ".join(f"{label} ({score:.2f})" for score, label in candidates[:3])
+                top = ", ".join(
+                    f"{label} ({score:.2f})" for score, label in candidates[:3]
+                )
                 logger.info(
                     "Unmatched track in %s: %s -> top candidates: %s",
                     display,
@@ -1068,7 +1212,9 @@ class AudioMetaDaemon:
             if not details:
                 return
             tracklist = details.get("tracklist") or []
-            tracks = [t for t in tracklist if t.get("type_", "track") in (None, "", "track")]
+            tracks = [
+                t for t in tracklist if t.get("type_", "track") in (None, "", "track")
+            ]
             if not tracks:
                 return
 
@@ -1104,7 +1250,9 @@ class AudioMetaDaemon:
                             meta,
                             track,
                             title_norm=title_norm,
-                            track_number=track_number if isinstance(track_number, int) else None,
+                            track_number=track_number
+                            if isinstance(track_number, int)
+                            else None,
                         )
                         candidates.append(
                             {
@@ -1114,7 +1262,9 @@ class AudioMetaDaemon:
                                 "components": components,
                             }
                         )
-                    candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+                    candidates.sort(
+                        key=lambda c: float(c.get("score") or 0.0), reverse=True
+                    )
                     payload["unmatched"].append(
                         {
                             "file": str(meta.path),
@@ -1137,7 +1287,10 @@ class AudioMetaDaemon:
                             "top_candidates": candidates[:5],
                         }
                     )
-                logger.debug("Unmatched diagnostics (discogs):\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
+                logger.debug(
+                    "Unmatched diagnostics (discogs):\n%s",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
 
             for pending in unmatched[:5]:
                 meta = pending.meta
@@ -1153,12 +1306,16 @@ class AudioMetaDaemon:
                         meta,
                         track,
                         title_norm=title_norm,
-                        track_number=track_number if isinstance(track_number, int) else None,
+                        track_number=track_number
+                        if isinstance(track_number, int)
+                        else None,
                     )
                     label = f"{track.get('position') or '?'} {track.get('title') or '<untitled>'}"
                     candidates.append((score, label))
                 candidates.sort(key=lambda x: x[0], reverse=True)
-                top = ", ".join(f"{label} ({score:.2f})" for score, label in candidates[:3])
+                top = ", ".join(
+                    f"{label} ({score:.2f})" for score, label in candidates[:3]
+                )
                 logger.info(
                     "Unmatched track in %s: %s -> top candidates: %s",
                     display,
@@ -1227,7 +1384,15 @@ class AudioMetaDaemon:
                 score,
                 release_id,
             )
-            options.append({"idx": idx, "provider": provider, "id": release_id, "label": label, "score": score})
+            options.append(
+                {
+                    "idx": idx,
+                    "provider": provider,
+                    "id": release_id,
+                    "label": label,
+                    "score": score,
+                }
+            )
             idx += 1
         if sample_meta and self.discogs:
             seen_pairs = {(opt["provider"], opt["id"]) for opt in options}
@@ -1268,7 +1433,9 @@ class AudioMetaDaemon:
         options.sort(key=lambda opt: (opt.get("score") or 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self._display_path(directory)
-        print(f"\nAmbiguous release for {display} – {dir_track_count} tracks detected, year hint {year_hint}:")
+        print(
+            f"\nAmbiguous release for {display} – {dir_track_count} tracks detected, year hint {year_hint}:"
+        )
         for option in options:
             print(f"  {option['idx']}. {option['label']}")
         print("  0. Skip this directory")
@@ -1291,7 +1458,9 @@ class AudioMetaDaemon:
                 return None
             if choice.lower() in {"i", "ignore"}:
                 self.cache.ignore_directory(directory, "user request")
-                logger.info("Ignoring %s per user request", self._display_path(directory))
+                logger.info(
+                    "Ignoring %s per user request", self._display_path(directory)
+                )
                 return None
             manual = self._parse_manual_release_choice(choice)
             if manual:
@@ -1319,11 +1488,15 @@ class AudioMetaDaemon:
         artist_hint, album_hint = self._directory_hints(sample_meta, directory)
         options: list[dict] = []
         idx = 1
-        mb_candidates = self.musicbrainz.search_release_candidates(artist_hint, album_hint, limit=6)
+        mb_candidates = self.musicbrainz.search_release_candidates(
+            artist_hint, album_hint, limit=6
+        )
         for cand in mb_candidates:
             year = self._parse_year(cand.get("date")) or "?"
             track_count = cand.get("track_total") or "?"
-            disc_label = self._disc_label(cand.get("disc_count")) or "disc count unknown"
+            disc_label = (
+                self._disc_label(cand.get("disc_count")) or "disc count unknown"
+            )
             format_label = ", ".join(cand.get("formats") or []) or "format unknown"
             score = cand.get("score")
             label = self._format_option_label(
@@ -1338,7 +1511,15 @@ class AudioMetaDaemon:
                 score,
                 cand["id"],
             )
-            options.append({"idx": idx, "provider": "musicbrainz", "id": cand["id"], "label": label, "score": score})
+            options.append(
+                {
+                    "idx": idx,
+                    "provider": "musicbrainz",
+                    "id": cand["id"],
+                    "label": label,
+                    "score": score,
+                }
+            )
             idx += 1
         if self.discogs and sample_meta:
             for cand in self._discogs_candidates(sample_meta):
@@ -1366,7 +1547,12 @@ class AudioMetaDaemon:
                 idx += 1
         if not options:
             self._record_skip(directory, "No manual candidates available")
-            logger.warning("No manual candidates available for %s (artist hint=%s, album hint=%s)", directory, artist_hint, album_hint)
+            logger.warning(
+                "No manual candidates available for %s (artist hint=%s, album hint=%s)",
+                directory,
+                artist_hint,
+                album_hint,
+            )
             return None
         options.sort(key=lambda opt: opt.get("score", 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
@@ -1399,7 +1585,9 @@ class AudioMetaDaemon:
                 continue
             return match["provider"], match["id"]
 
-    def _directory_hints(self, sample_meta: TrackMetadata, directory: Path) -> tuple[Optional[str], Optional[str]]:
+    def _directory_hints(
+        self, sample_meta: TrackMetadata, directory: Path
+    ) -> tuple[Optional[str], Optional[str]]:
         guess = guess_metadata_from_path(sample_meta.path)
         artist_hint = sample_meta.album_artist or sample_meta.artist or guess.artist
         if not artist_hint and directory.parent != directory:
@@ -1419,14 +1607,20 @@ class AudioMetaDaemon:
                 album_hint = names[-1]
         return artist_hint, album_hint
 
-    def _apply_discogs_release_details(self, pending_results: list[PendingResult], release_details: dict) -> None:
+    def _apply_discogs_release_details(
+        self, pending_results: list[PendingResult], release_details: dict
+    ) -> None:
         if not self.discogs:
             return
         tracklist = release_details.get("tracklist") or []
-        tracks = [t for t in tracklist if t.get("type_", "track") in (None, "", "track")]
+        tracks = [
+            t for t in tracklist if t.get("type_", "track") in (None, "", "track")
+        ]
         if not tracks:
             for pending in pending_results:
-                self.discogs.apply_release_details(pending.meta, release_details, allow_overwrite=True)
+                self.discogs.apply_release_details(
+                    pending.meta, release_details, allow_overwrite=True
+                )
                 score = pending.meta.match_confidence or 0.4
                 pending.meta.match_confidence = score
                 pending.result = LookupResult(pending.meta, score=score)
@@ -1450,7 +1644,11 @@ class AudioMetaDaemon:
             for track in tracks:
                 score = 0.0
                 position = track.get("position")
-                pos_num = self.discogs._parse_track_number(position) if isinstance(position, str) else None
+                pos_num = (
+                    self.discogs._parse_track_number(position)
+                    if isinstance(position, str)
+                    else None
+                )
                 if isinstance(track_number, int) and pos_num:
                     diff = abs(pos_num - track_number)
                     if diff == 0:
@@ -1478,14 +1676,23 @@ class AudioMetaDaemon:
             if score < 0.58:
                 continue
             track = tracks[track_index]
-            self.discogs.apply_release_details_matched(pending.meta, release_details, track, allow_overwrite=True)
+            self.discogs.apply_release_details_matched(
+                pending.meta, release_details, track, allow_overwrite=True
+            )
             position = track.get("position")
             if "TRACKNUMBER" not in pending.meta.extra and isinstance(position, str):
                 pos_num = self.discogs._parse_track_number(position)
                 if isinstance(pos_num, int):
                     pending.meta.extra["TRACKNUMBER"] = pos_num
-            pending.meta.match_confidence = max(pending.meta.match_confidence or 0.0, 0.35 + score * 0.3)
-            pending.result = LookupResult(pending.meta, score=max(pending.result.score if pending.result else 0.0, 0.35 + score * 0.3))
+            pending.meta.match_confidence = max(
+                pending.meta.match_confidence or 0.0, 0.35 + score * 0.3
+            )
+            pending.result = LookupResult(
+                pending.meta,
+                score=max(
+                    pending.result.score if pending.result else 0.0, 0.35 + score * 0.3
+                ),
+            )
             pending.matched = True
 
     def _apply_musicbrainz_release_selection(
@@ -1534,7 +1741,11 @@ class AudioMetaDaemon:
                 title_norm = normalize_title_for_match(title)
                 row: list[float] = []
                 for track in tracks:
-                    if meta.musicbrainz_track_id and track.recording_id and meta.musicbrainz_track_id == track.recording_id:
+                    if (
+                        meta.musicbrainz_track_id
+                        and track.recording_id
+                        and meta.musicbrainz_track_id == track.recording_id
+                    ):
                         row.append(1.0)
                         continue
                     score = 0.0
@@ -1559,7 +1770,9 @@ class AudioMetaDaemon:
                     elif title and track.title:
                         ratio = title_similarity(title, track.title) or 0.0
                         score += 0.2 * ratio
-                    dur_ratio = duration_similarity(meta.duration_seconds, track.duration_seconds)
+                    dur_ratio = duration_similarity(
+                        meta.duration_seconds, track.duration_seconds
+                    )
                     if dur_ratio is not None:
                         score += 0.05 * dur_ratio
                     row.append(max(0.0, min(1.0, score)))
@@ -1575,17 +1788,29 @@ class AudioMetaDaemon:
                 if score < 0.63:
                     continue
                 track = tracks[track_index]
-                release_match = ReleaseMatch(release=release_data, track=track, confidence=score)
-                lookup = self.musicbrainz.apply_release_match(to_assign[pending_index].meta, release_match)
+                release_match = ReleaseMatch(
+                    release=release_data, track=track, confidence=score
+                )
+                lookup = self.musicbrainz.apply_release_match(
+                    to_assign[pending_index].meta, release_match
+                )
                 if lookup:
                     to_assign[pending_index].result = lookup
                     to_assign[pending_index].matched = True
                     applied = True
                     release_data.mark_claimed(track.recording_id)
-                    if "TRACKNUMBER" not in to_assign[pending_index].meta.extra and isinstance(track.number, int):
-                        to_assign[pending_index].meta.extra["TRACKNUMBER"] = track.number
-                    if "DISCNUMBER" not in to_assign[pending_index].meta.extra and isinstance(track.disc_number, int):
-                        to_assign[pending_index].meta.extra["DISCNUMBER"] = track.disc_number
+                    if "TRACKNUMBER" not in to_assign[
+                        pending_index
+                    ].meta.extra and isinstance(track.number, int):
+                        to_assign[pending_index].meta.extra["TRACKNUMBER"] = (
+                            track.number
+                        )
+                    if "DISCNUMBER" not in to_assign[
+                        pending_index
+                    ].meta.extra and isinstance(track.disc_number, int):
+                        to_assign[pending_index].meta.extra["DISCNUMBER"] = (
+                            track.disc_number
+                        )
         if applied:
             artist = release_data.album_artist if release_data else None
             album = release_data.album_title if release_data else None
@@ -1623,7 +1848,9 @@ class AudioMetaDaemon:
             title_hint = guess.title
         if not artist_hint and not album_hint and not title_hint:
             return []
-        results = self.discogs.search_candidates(artist=artist_hint, album=album_hint, title=title_hint, limit=8)
+        results = self.discogs.search_candidates(
+            artist=artist_hint, album=album_hint, title=title_hint, limit=8
+        )
         candidates = []
         for item in results:
             release_id = item.get("id")
@@ -1633,19 +1860,29 @@ class AudioMetaDaemon:
             track_count = item.get("trackcount")
             if track_count is None and details:
                 tracklist = details.get("tracklist") or []
-                track_count = len([t for t in tracklist if t.get("type_", "track") == "track"])
+                track_count = len(
+                    [t for t in tracklist if t.get("type_", "track") == "track"]
+                )
             formats, disc_count = self._discogs_format_details(item, details)
-            artist_name = self._discogs_release_artist(details) or item.get("artist") or item.get("label")
+            artist_name = (
+                self._discogs_release_artist(details)
+                or item.get("artist")
+                or item.get("label")
+            )
             title_value = (details or {}).get("title") or item.get("title")
             artist_similarity = self._token_overlap_ratio(artist_hint, artist_name)
             album_similarity = self._token_overlap_ratio(album_hint, title_value)
-            release_track_total = track_count or (details and len(details.get("tracklist") or [])) or 0
+            release_track_total = (
+                track_count or (details and len(details.get("tracklist") or [])) or 0
+            )
             dir_tracks_val = meta.extra.get("TRACK_TOTAL")
             dir_tracks = None
             if isinstance(dir_tracks_val, str) and dir_tracks_val.isdigit():
                 dir_tracks = int(dir_tracks_val)
             if release_track_total and release_track_total >= 3 and dir_tracks:
-                if abs(release_track_total - dir_tracks) > max(3, int(0.15 * max(dir_tracks, release_track_total))):
+                if abs(release_track_total - dir_tracks) > max(
+                    3, int(0.15 * max(dir_tracks, release_track_total))
+                ):
                     continue
             if artist_similarity < 0.2 and album_similarity < 0.2:
                 continue
@@ -1667,7 +1904,9 @@ class AudioMetaDaemon:
             )
         return candidates
 
-    def _discogs_format_details(self, search_item: dict, release: Optional[dict]) -> tuple[list[str], Optional[int]]:
+    def _discogs_format_details(
+        self, search_item: dict, release: Optional[dict]
+    ) -> tuple[list[str], Optional[int]]:
         entries: list[str] = []
         disc_total = 0
         source_formats = (release or {}).get("formats") or []
@@ -1711,7 +1950,9 @@ class AudioMetaDaemon:
                 names.append(base)
         return ", ".join(names) if names else None
 
-    def _discogs_counts(self, release: Optional[dict]) -> tuple[Optional[int], Optional[int]]:
+    def _discogs_counts(
+        self, release: Optional[dict]
+    ) -> tuple[Optional[int], Optional[int]]:
         if not release:
             return None, None
         track_count = len(release.get("tracklist") or []) or None
@@ -1812,7 +2053,9 @@ class AudioMetaDaemon:
         year_fmt = self._style(str(year), ANSI_BOLD, ANSI_YELLOW)
         stats = f"{track_count} tracks · {disc_label} · {format_label}".strip()
         stats_fmt = self._style(stats, ANSI_DIM)
-        score_fmt = self._style(f"score {score:.2f}", ANSI_DIM) if score is not None else ""
+        score_fmt = (
+            self._style(f"score {score:.2f}", ANSI_DIM) if score is not None else ""
+        )
         release_fmt = self._style(release_id, ANSI_DIM)
         sections = [provider, f"{artist_fmt} – {title_fmt}", f"({year_fmt})"]
         sections.append(f"\t{stats_fmt}")
@@ -1821,7 +2064,9 @@ class AudioMetaDaemon:
         sections.append(f"\t{release_fmt}")
         return " ".join(section for section in sections if section)
 
-    def _directory_context(self, directory: Path, files: list[Path]) -> tuple[int, Optional[int]]:
+    def _directory_context(
+        self, directory: Path, files: list[Path]
+    ) -> tuple[int, Optional[int]]:
         return len(files), self._infer_year_from_directory(directory)
 
     def _print_release_selection_summary(
@@ -1850,9 +2095,13 @@ class AudioMetaDaemon:
         before_artist = None
         if pending_results:
             before_album = pending_results[0].meta.album
-            before_artist = pending_results[0].meta.album_artist or pending_results[0].meta.artist
+            before_artist = (
+                pending_results[0].meta.album_artist or pending_results[0].meta.artist
+            )
         display = self._display_path(directory)
-        provider_label = {"musicbrainz": "MusicBrainz", "discogs": "Discogs"}.get(provider, provider)
+        provider_label = {"musicbrainz": "MusicBrainz", "discogs": "Discogs"}.get(
+            provider, provider
+        )
         stats_parts = [f"tracks={track_count or '?'}", f"discs={disc_count or '?'}"]
         if year:
             stats_parts.insert(0, f"year={year}")
@@ -1893,11 +2142,16 @@ class AudioMetaDaemon:
                     return "discogs", release_id
                 print("Discogs IDs must be numeric.")
                 return None
-        if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value.lower()):
+        if re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            value.lower(),
+        ):
             return "musicbrainz", value
         return None
 
-    def _calculate_directory_hash(self, directory: Path, files: list[Path]) -> Optional[str]:
+    def _calculate_directory_hash(
+        self, directory: Path, files: list[Path]
+    ) -> Optional[str]:
         if not files:
             return None
         hasher = hashlib.sha1()
@@ -1961,7 +2215,9 @@ class AudioMetaDaemon:
             display = self._display_path(directory)
             print(f" - {display}: {reason}")
 
-    def _cached_release_for_directory(self, directory: Path) -> Optional[tuple[str, str, float]]:
+    def _cached_release_for_directory(
+        self, directory: Path
+    ) -> Optional[tuple[str, str, float]]:
         if not self.release_cache_enabled:
             return None
         for key in self._directory_release_keys(directory):
@@ -1969,7 +2225,9 @@ class AudioMetaDaemon:
             if entry:
                 provider, release_id, score = entry
                 if not str(key).startswith("hint://"):
-                    self._persist_directory_release(directory, provider, release_id, score)
+                    self._persist_directory_release(
+                        directory, provider, release_id, score
+                    )
                 return entry
         return None
 
@@ -2011,14 +2269,18 @@ class AudioMetaDaemon:
     def _path_based_hints(self, directory: Path) -> tuple[Optional[str], Optional[str]]:
         return directory_identity_logic.path_based_hints(directory)
 
-    def _hint_cache_key(self, artist: Optional[str], album: Optional[str]) -> Optional[str]:
+    def _hint_cache_key(
+        self, artist: Optional[str], album: Optional[str]
+    ) -> Optional[str]:
         return directory_identity_logic.hint_cache_key(artist, album)
 
     @staticmethod
     def _normalize_hint_value(value: Optional[str]) -> str:
         return directory_identity_logic.normalize_hint_value(value)
 
-    def _token_overlap_ratio(self, expected: Optional[str], candidate: Optional[str]) -> float:
+    def _token_overlap_ratio(
+        self, expected: Optional[str], candidate: Optional[str]
+    ) -> float:
         return directory_identity_logic.token_overlap_ratio(expected, candidate)
 
     @staticmethod
@@ -2038,11 +2300,19 @@ class AudioMetaDaemon:
                 continue
         return str(path)
 
-    def _prepare_album_batch(self, batch: DirectoryBatch, force_prompt: bool = False) -> Optional[DirectoryBatch]:
-        batcher = AlbumBatcher(scanner=self.scanner, processed_albums=self._processed_albums)
+    def _prepare_album_batch(
+        self, batch: DirectoryBatch, force_prompt: bool = False
+    ) -> Optional[DirectoryBatch]:
+        batcher = AlbumBatcher(
+            scanner=self.scanner, processed_albums=self._processed_albums
+        )
         result = batcher.prepare_album_batch(batch, force_prompt=force_prompt)
         if result.already_processed and not force_prompt:
-            logger.debug("Album %s already processed; skipping %s", result.album_root, batch.directory)
+            logger.debug(
+                "Album %s already processed; skipping %s",
+                result.album_root,
+                batch.directory,
+            )
         return result.batch
 
     def _album_root(self, directory: Path) -> Path:

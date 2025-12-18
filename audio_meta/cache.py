@@ -37,7 +37,9 @@ class MetadataCache:
             """
         )
         try:
-            self._conn.execute("ALTER TABLE processed_files ADD COLUMN organized INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute(
+                "ALTER TABLE processed_files ADD COLUMN organized INTEGER NOT NULL DEFAULT 0"
+            )
         except sqlite3.OperationalError:
             pass
         self._conn.execute(
@@ -235,7 +237,9 @@ class MetadataCache:
         mtime, size, organized = row
         return int(mtime), int(size), bool(organized)
 
-    def set_processed_file(self, path: Path, mtime_ns: int, size_bytes: int, organized: bool) -> None:
+    def set_processed_file(
+        self, path: Path, mtime_ns: int, size_bytes: int, organized: bool
+    ) -> None:
         with self._lock:
             self._conn.execute(
                 """
@@ -286,7 +290,9 @@ class MetadataCache:
 
     def delete_move(self, source: Path | str) -> None:
         with self._lock:
-            self._conn.execute("DELETE FROM moves WHERE source_path = ?", (str(source),))
+            self._conn.execute(
+                "DELETE FROM moves WHERE source_path = ?", (str(source),)
+            )
             self._conn.commit()
 
     def clear_directory_releases(self) -> None:
@@ -301,7 +307,9 @@ class MetadataCache:
 
     def prune_missing_processed_files(self, max_entries: int = 10_000) -> int:
         with self._lock:
-            cursor = self._conn.execute("SELECT path FROM processed_files LIMIT ?", (int(max_entries),))
+            cursor = self._conn.execute(
+                "SELECT path FROM processed_files LIMIT ?", (int(max_entries),)
+            )
             rows = cursor.fetchall()
         to_delete: list[str] = []
         for (path_str,) in rows:
@@ -310,13 +318,18 @@ class MetadataCache:
         if not to_delete:
             return 0
         with self._lock:
-            self._conn.executemany("DELETE FROM processed_files WHERE path = ?", [(p,) for p in to_delete])
+            self._conn.executemany(
+                "DELETE FROM processed_files WHERE path = ?", [(p,) for p in to_delete]
+            )
             self._conn.commit()
         return len(to_delete)
 
     def prune_missing_moves(self, max_entries: int = 10_000) -> int:
         with self._lock:
-            cursor = self._conn.execute("SELECT source_path, target_path FROM moves LIMIT ?", (int(max_entries),))
+            cursor = self._conn.execute(
+                "SELECT source_path, target_path FROM moves LIMIT ?",
+                (int(max_entries),),
+            )
             rows = cursor.fetchall()
         to_delete: list[str] = []
         for source_str, target_str in rows:
@@ -325,7 +338,9 @@ class MetadataCache:
         if not to_delete:
             return 0
         with self._lock:
-            self._conn.executemany("DELETE FROM moves WHERE source_path = ?", [(s,) for s in to_delete])
+            self._conn.executemany(
+                "DELETE FROM moves WHERE source_path = ?", [(s,) for s in to_delete]
+            )
             self._conn.commit()
         return len(to_delete)
 
@@ -343,7 +358,10 @@ class MetadataCache:
         if not to_delete:
             return 0
         with self._lock:
-            self._conn.executemany("DELETE FROM release_homes WHERE release_key = ?", [(k,) for k in to_delete])
+            self._conn.executemany(
+                "DELETE FROM release_homes WHERE release_key = ?",
+                [(k,) for k in to_delete],
+            )
             self._conn.commit()
         return len(to_delete)
 
@@ -361,11 +379,16 @@ class MetadataCache:
         if not to_delete:
             return 0
         with self._lock:
-            self._conn.executemany("DELETE FROM deferred_prompts WHERE directory_path = ?", [(p,) for p in to_delete])
+            self._conn.executemany(
+                "DELETE FROM deferred_prompts WHERE directory_path = ?",
+                [(p,) for p in to_delete],
+            )
             self._conn.commit()
         return len(to_delete)
 
-    def get_directory_release(self, directory: Path | str) -> Optional[tuple[str, str, float]]:
+    def get_directory_release(
+        self, directory: Path | str
+    ) -> Optional[tuple[str, str, float]]:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT provider, release_id, score FROM directory_releases WHERE directory_path = ?",
@@ -377,7 +400,9 @@ class MetadataCache:
         provider, release_id, score = row
         return provider, release_id, float(score)
 
-    def set_directory_release(self, directory: Path | str, provider: str, release_id: str, score: float) -> None:
+    def set_directory_release(
+        self, directory: Path | str, provider: str, release_id: str, score: float
+    ) -> None:
         with self._lock:
             self._conn.execute(
                 """
@@ -431,7 +456,9 @@ class MetadataCache:
             )
             self._conn.commit()
 
-    def get_release_by_hash(self, directory_hash: str) -> Optional[tuple[str, str, float]]:
+    def get_release_by_hash(
+        self, directory_hash: str
+    ) -> Optional[tuple[str, str, float]]:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT provider, release_id, score FROM hash_releases WHERE directory_hash = ?",
@@ -443,7 +470,9 @@ class MetadataCache:
         provider, release_id, score = row
         return provider, release_id, float(score)
 
-    def set_release_by_hash(self, directory_hash: str, provider: str, release_id: str, score: float) -> None:
+    def set_release_by_hash(
+        self, directory_hash: str, provider: str, release_id: str, score: float
+    ) -> None:
         with self._lock:
             self._conn.execute(
                 """
@@ -488,7 +517,8 @@ class MetadataCache:
     def _get(self, namespace: str, key: str) -> Optional[dict]:
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT value FROM cache WHERE namespace = ? AND key = ?", (namespace, key)
+                "SELECT value FROM cache WHERE namespace = ? AND key = ?",
+                (namespace, key),
             )
             row = cursor.fetchone()
         if not row:
@@ -561,7 +591,9 @@ class MetadataCache:
             )
             self._conn.commit()
 
-    def get_release_home(self, release_key: str) -> Optional[tuple[str, Optional[int], Optional[str]]]:
+    def get_release_home(
+        self, release_key: str
+    ) -> Optional[tuple[str, Optional[int], Optional[str]]]:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT directory_path, track_count, directory_hash FROM release_homes WHERE release_key = ?",
@@ -572,7 +604,11 @@ class MetadataCache:
             return None
         directory_path, track_count, directory_hash = row
         count = int(track_count) if track_count is not None else None
-        return str(directory_path), count, (str(directory_hash) if directory_hash else None)
+        return (
+            str(directory_path),
+            count,
+            (str(directory_hash) if directory_hash else None),
+        )
 
     def set_release_home(
         self,

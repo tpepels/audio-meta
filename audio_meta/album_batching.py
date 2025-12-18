@@ -32,7 +32,9 @@ class AlbumBatcher:
         except FileNotFoundError:
             resolved_root = album_root
         if not force_prompt and resolved_root in self.processed_albums:
-            return AlbumBatcher.Result(album_root=album_root, batch=None, already_processed=True)
+            return AlbumBatcher.Result(
+                album_root=album_root, batch=None, already_processed=True
+            )
         self.processed_albums.add(resolved_root)
         disc_dirs = self.disc_directories(album_root)
         files: list[Path] = []
@@ -58,7 +60,9 @@ class AlbumBatcher:
                 if sub_batch:
                     _add_files(sub_batch.files)
         if not files:
-            return AlbumBatcher.Result(album_root=album_root, batch=None, already_processed=False)
+            return AlbumBatcher.Result(
+                album_root=album_root, batch=None, already_processed=False
+            )
         return AlbumBatcher.Result(
             album_root=album_root,
             batch=DirectoryBatch(directory=album_root, files=files),

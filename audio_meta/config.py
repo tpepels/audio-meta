@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field, field_validator
 
 class LibrarySettings(BaseModel):
     roots: List[Path]
-    include_extensions: List[str] = Field(default_factory=lambda: [".mp3", ".flac", ".m4a", ".ogg"])
+    include_extensions: List[str] = Field(
+        default_factory=lambda: [".mp3", ".flac", ".m4a", ".ogg"]
+    )
     exclude_patterns: List[str] = Field(default_factory=list)
 
     @field_validator("roots", mode="before")
@@ -19,8 +21,12 @@ class LibrarySettings(BaseModel):
 
 
 class ClassicalSettings(BaseModel):
-    genre_keywords: List[str] = Field(default_factory=lambda: ["classical", "baroque", "romantic"])
-    title_markers: List[str] = Field(default_factory=lambda: ["symphony", "concerto", "sonata", "suite"])
+    genre_keywords: List[str] = Field(
+        default_factory=lambda: ["classical", "baroque", "romantic"]
+    )
+    title_markers: List[str] = Field(
+        default_factory=lambda: ["symphony", "concerto", "sonata", "suite"]
+    )
     min_duration_seconds: int = 540
 
 

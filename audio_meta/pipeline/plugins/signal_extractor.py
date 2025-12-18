@@ -10,4 +10,3 @@ class DefaultSignalExtractorPlugin(SignalExtractorPlugin):
     def extract(self, ctx: TrackSignalContext) -> None:
         if ctx.existing_tags:
             ctx.daemon._apply_tag_hints(ctx.meta, ctx.existing_tags)
-

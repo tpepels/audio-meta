@@ -15,4 +15,3 @@ class DefaultDirectoryAnalyzerPlugin(DirectoryAnalyzerPlugin):
             return
         ctx.dir_track_count = count
         ctx.dir_year = year
-

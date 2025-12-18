@@ -16,7 +16,11 @@ def schedule_directory(daemon: Any, directory: Path, reason: str) -> None:
                 return
             daemon._deferred_set.add(directory)
         daemon.cache.add_deferred_prompt(directory, reason)
-        logger.info("Deferring %s (%s); will request input later", daemon._display_path(directory), reason)
+        logger.info(
+            "Deferring %s (%s); will request input later",
+            daemon._display_path(directory),
+            reason,
+        )
         return
     with daemon._defer_lock:
         if directory in daemon._deferred_set:
@@ -24,7 +28,11 @@ def schedule_directory(daemon: Any, directory: Path, reason: str) -> None:
         daemon._deferred_set.add(directory)
         daemon._deferred_directories.append(directory)
     daemon.cache.add_deferred_prompt(directory, reason)
-    logger.info("Deferring %s (%s); will request input later", daemon._display_path(directory), reason)
+    logger.info(
+        "Deferring %s (%s); will request input later",
+        daemon._display_path(directory),
+        reason,
+    )
 
 
 def sync_from_cache(daemon: Any) -> None:
@@ -56,11 +64,13 @@ def process_pending(daemon: Any) -> None:
         for directory in pending:
             batch = daemon.scanner.collect_directory(directory)
             if not batch:
-                logger.warning("Deferred directory %s no longer exists; skipping", daemon._display_path(directory))
+                logger.warning(
+                    "Deferred directory %s no longer exists; skipping",
+                    daemon._display_path(directory),
+                )
                 daemon.cache.remove_deferred_prompt(directory)
                 continue
             daemon._process_directory(batch, force_prompt=True)
             daemon.cache.remove_deferred_prompt(directory)
     finally:
         daemon._processing_deferred = False
-

@@ -24,7 +24,9 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
             return
 
         directory_hash = ctx.directory_hash
-        should_cache_release = bool(daemon.release_cache_enabled and directory_hash and best_release_id)
+        should_cache_release = bool(
+            daemon.release_cache_enabled and directory_hash and best_release_id
+        )
 
         def _cache_release_state() -> None:
             if not should_cache_release or not directory_hash:
@@ -33,7 +35,9 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
             effective_score = ctx.release_scores.get(best_release_id, ctx.best_score)
             if effective_score is None:
                 effective_score = 1.0
-            daemon.cache.set_release_by_hash(directory_hash, provider, release_plain_id, float(effective_score))
+            daemon.cache.set_release_by_hash(
+                directory_hash, provider, release_plain_id, float(effective_score)
+            )
             daemon.cache.set_directory_hash(ctx.directory, directory_hash)
 
         if not applied_plans:
@@ -41,7 +45,8 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
                 daemon._maybe_set_release_home(
                     daemon._release_key(ctx.applied_provider, ctx.applied_release_id),
                     daemon._album_root(ctx.directory),
-                    track_count=ctx.dir_track_count or daemon._count_audio_files(ctx.directory),
+                    track_count=ctx.dir_track_count
+                    or daemon._count_audio_files(ctx.directory),
                     directory_hash=daemon.cache.get_directory_hash(ctx.directory),
                 )
             _cache_release_state()
@@ -61,7 +66,12 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
             destination_dirs.add(daemon._album_root(plan.meta.path.parent))
 
         for dest_dir in destination_dirs:
-            daemon._persist_directory_release(dest_dir, ctx.applied_provider, ctx.applied_release_id, float(effective_score))
+            daemon._persist_directory_release(
+                dest_dir,
+                ctx.applied_provider,
+                ctx.applied_release_id,
+                float(effective_score),
+            )
             if not ctx.is_singleton:
                 daemon._maybe_set_release_home(
                     daemon._release_key(ctx.applied_provider, ctx.applied_release_id),
@@ -74,8 +84,9 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
 
         if ctx.release_home_dir:
             moved_into_release_home = any(
-                plan.target_path and daemon._path_under_directory(plan.target_path, ctx.release_home_dir) for plan in ctx.planned
+                plan.target_path
+                and daemon._path_under_directory(plan.target_path, ctx.release_home_dir)
+                for plan in ctx.planned
             )
             if moved_into_release_home:
                 daemon._reprocess_directory(ctx.release_home_dir)
-

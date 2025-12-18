@@ -24,8 +24,16 @@ def normalize_title_for_match(value: Optional[str]) -> Optional[str]:
     cleaned = cleaned.lower()
     cleaned = re.sub(r"^\s*\d{1,3}\s*[-–—_.]+\s*", "", cleaned)
     cleaned = re.sub(r"^\s*\d{1,3}\s+", "", cleaned)
-    cleaned = re.sub(r"\s*[\(\[]\s*(remaster(?:ed)?|mono|stereo|live|bonus track|bonus|deluxe|expanded|version)\s*[\)\]]\s*$", "", cleaned)
-    cleaned = re.sub(r"\s*-\s*(remaster(?:ed)?|mono|stereo|live|bonus track|bonus|deluxe|expanded|version)\s*$", "", cleaned)
+    cleaned = re.sub(
+        r"\s*[\(\[]\s*(remaster(?:ed)?|mono|stereo|live|bonus track|bonus|deluxe|expanded|version)\s*[\)\]]\s*$",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\s*-\s*(remaster(?:ed)?|mono|stereo|live|bonus track|bonus|deluxe|expanded|version)\s*$",
+        "",
+        cleaned,
+    )
     cleaned = re.sub(r"[^\w\s]+", " ", cleaned, flags=re.UNICODE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned or None
@@ -50,7 +58,9 @@ def duration_similarity(a: Optional[int], b: Optional[int]) -> Optional[float]:
     return max(0.0, 1 - diff / (max(a, b) or 1))
 
 
-def combine_similarity(title_ratio: Optional[float], duration_ratio: Optional[float]) -> Optional[float]:
+def combine_similarity(
+    title_ratio: Optional[float], duration_ratio: Optional[float]
+) -> Optional[float]:
     score = 0.0
     weight = 0.0
     if title_ratio is not None:

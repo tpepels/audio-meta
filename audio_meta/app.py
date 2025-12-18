@@ -34,8 +34,16 @@ class AudioMetaApp:
             try:
                 discogs = DiscogsClient(settings.providers, cache=cache)
             except Exception as exc:
-                logging.getLogger(__name__).warning("Failed to initialise Discogs client: %s", exc)
-        return cls(settings=settings, cache=cache, scanner=scanner, musicbrainz=musicbrainz, discogs=discogs)
+                logging.getLogger(__name__).warning(
+                    "Failed to initialise Discogs client: %s", exc
+                )
+        return cls(
+            settings=settings,
+            cache=cache,
+            scanner=scanner,
+            musicbrainz=musicbrainz,
+            discogs=discogs,
+        )
 
     def get_daemon(
         self,
@@ -58,7 +66,9 @@ class AudioMetaApp:
 
     def get_auditor(self) -> LibraryAuditor:
         if self._auditor is None:
-            self._auditor = LibraryAuditor(self.settings, cache=self.cache, musicbrainz=self.musicbrainz)
+            self._auditor = LibraryAuditor(
+                self.settings, cache=self.cache, musicbrainz=self.musicbrainz
+            )
         return self._auditor
 
     def close(self) -> None:
