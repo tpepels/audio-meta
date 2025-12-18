@@ -16,6 +16,11 @@ If the directory is ambiguous and you want a deterministic expected pick, rerun 
 audio-meta --config /path/to/config.yaml export-testcase "/path/to/Artist/Album" --expected-release "musicbrainz:<release-id>" --out /tmp/case.json
 ```
 
+Suggested real-world outliers to export (high value):
+- Chopin Études / similar “same work, multiple performers” releases
+- Opera arias / split folders (directory has fewer tracks than the true album)
+- Multi-disc classical with offsets (disc+track numbering edge cases)
+
 ## 2) Copy the JSON back to this repo
 
 ```bash
@@ -31,4 +36,3 @@ python -m unittest discover -s tests -p "test_*.py"
 ```
 
 The fixture replay tests are in `tests/test_exported_release_selection_fixtures.py`.
-

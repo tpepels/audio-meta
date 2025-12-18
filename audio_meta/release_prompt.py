@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .daemon_types import ReleaseExample
@@ -16,6 +16,32 @@ class ReleasePromptOption:
     score: Optional[float]
 
 
+@dataclass(slots=True)
+class ReleasePromptDiagnostics:
+    coverage: Optional[float] = None
+    avg_confidence: Optional[float] = None
+    consensus: Optional[float] = None
+    matched: Optional[int] = None
+    total: Optional[int] = None
+    reasons: list[str] = field(default_factory=list)
+
+
+def _format_diagnostics(diag: ReleasePromptDiagnostics) -> str:
+    parts: list[str] = []
+    if isinstance(diag.coverage, float):
+        parts.append(f"cov {diag.coverage:.0%}")
+    if isinstance(diag.avg_confidence, float):
+        parts.append(f"avg {diag.avg_confidence:.2f}")
+    if isinstance(diag.consensus, float):
+        parts.append(f"cons {diag.consensus:.0%}")
+    if isinstance(diag.matched, int) and isinstance(diag.total, int) and diag.total:
+        parts.append(f"{diag.matched}/{diag.total}")
+    reasons = list(diag.reasons or [])
+    if reasons:
+        parts.append("; ".join(reasons[:2]))
+    return "  [" + " | ".join(parts) + "]" if parts else ""
+
+
 def build_release_prompt_options(
     candidates: list[tuple[str, float]],
     release_examples: dict[str, ReleaseExample],
@@ -27,6 +53,7 @@ def build_release_prompt_options(
         [int, str, str, str, str, str, str, str, Optional[float], str], str
     ],
     show_urls: bool,
+    diagnostics: Optional[dict[str, ReleasePromptDiagnostics]] = None,
 ) -> list[ReleasePromptOption]:
     options: list[ReleasePromptOption] = []
     idx = 1
@@ -55,6 +82,8 @@ def build_release_prompt_options(
             score,
             release_id,
         )
+        if diagnostics and key in diagnostics:
+            label += _format_diagnostics(diagnostics[key])
         if show_urls:
             url = release_url(provider, release_id)
             if url:
@@ -77,6 +106,7 @@ def append_mb_search_options(
     mb_candidates: list[dict[str, Any]],
     *,
     show_urls: bool,
+    min_score: float = 0.0,
     parse_year: Callable[[Optional[str]], Any],
     disc_label: Callable[[Optional[int]], Optional[str]],
     format_option_label: Callable[
@@ -92,13 +122,15 @@ def append_mb_search_options(
         pair = ("musicbrainz", release_id)
         if pair in seen:
             continue
+        score = cand.get("score")
+        score_f = float(score) if isinstance(score, (int, float)) else None
+        if score_f is not None and score_f < float(min_score or 0.0):
+            continue
         year_val = parse_year(cand.get("date")) or "?"
         year = str(year_val)
         track_count = str(cand.get("track_total") or "?")
         disc_label_val = disc_label(cand.get("disc_count")) or "disc count unknown"
         format_label = ", ".join(cand.get("formats") or []) or "format unknown"
-        score = cand.get("score")
-        score_f = float(score) if isinstance(score, (int, float)) else None
         label = format_option_label(
             idx,
             "MB",

@@ -54,6 +54,7 @@ class DaemonSettings(BaseModel):
     prompt_show_urls: bool = True
     prompt_expand_mb_candidates: bool = True
     prompt_mb_search_limit: int = 6
+    prompt_min_mb_search_score: float = 0.05
     prompt_preview_tracks: int = 3
     process_deferred_prompts_at_end: bool = True
 

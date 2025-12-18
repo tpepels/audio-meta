@@ -1,0 +1,272 @@
+{
+  "audio_meta_version": "0.0",
+  "directory": "/music/Anna Netrebko/Opera Arias",
+  "dir_track_count": 5,
+  "dir_year": null,
+  "discogs_details": {},
+  "display_directory": "/music/Anna Netrebko/Opera Arias",
+  "expected": {
+    "ambiguous_candidates": [],
+    "best_release_id": "musicbrainz:opera-arias-2003",
+    "best_score": 0.0,
+    "coverage": 1.0,
+    "forced_release_key": null,
+    "should_abort": false
+  },
+  "file_count": 5,
+  "generated_at": "1970-01-01T00:00:00+00:00",
+  "is_singleton": false,
+  "musicbrainz_releases": {
+    "opera-arias-2003": {
+      "album_artist": "Anna Netrebko; Wiener Philharmoniker; Gianandrea Noseda",
+      "album_title": "Opera Arias",
+      "disc_count": 1,
+      "formats": [
+        "CD"
+      ],
+      "release_date": "2003",
+      "release_id": "opera-arias-2003",
+      "tracks": [
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "1",
+          "recording_id": "o1",
+          "title": "Rusalka: Song to the Moon"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "2",
+          "recording_id": "o2",
+          "title": "La sonnambula: Care compagne, teneri amici... Come per me sereno"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "3",
+          "recording_id": "o3",
+          "title": "I puritani: Qui la voce sua soave"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "4",
+          "recording_id": "o4",
+          "title": "La traviata: Sempre libera"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "5",
+          "recording_id": "o5",
+          "title": "Rom\u00e9o et Juliette: Je veux vivre"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "6",
+          "recording_id": "o6",
+          "title": "Opera filler 06"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "7",
+          "recording_id": "o7",
+          "title": "Opera filler 07"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "8",
+          "recording_id": "o8",
+          "title": "Opera filler 08"
+        },
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "9",
+          "recording_id": "o9",
+          "title": "Opera filler 09"
+        }
+      ]
+    },
+    "wrong-compilation": {
+      "album_artist": "Various Artists",
+      "album_title": "Great Opera Arias",
+      "disc_count": 2,
+      "formats": [
+        "CD"
+      ],
+      "release_date": "1999",
+      "release_id": "wrong-compilation",
+      "tracks": [
+        {
+          "disc_number": 1,
+          "duration_seconds": null,
+          "number": "1",
+          "recording_id": "w1",
+          "title": "Random aria"
+        }
+      ]
+    }
+  },
+  "pending_results": [
+    {
+      "existing_tags": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "date": "2003"
+      },
+      "matched": false,
+      "meta": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "composer": null,
+        "duration_seconds": null,
+        "extra": {},
+        "genre": null,
+        "match_confidence": null,
+        "movement": null,
+        "musicbrainz_release_id": null,
+        "musicbrainz_track_id": null,
+        "title": "La Sonnambula: Care Compagne - Come per me sereno",
+        "work": null
+      },
+      "path": "/music/Anna Netrebko/Opera Arias/06.flac"
+    },
+    {
+      "existing_tags": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "date": "2003"
+      },
+      "matched": false,
+      "meta": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "composer": null,
+        "duration_seconds": null,
+        "extra": {},
+        "genre": null,
+        "match_confidence": null,
+        "movement": null,
+        "musicbrainz_release_id": null,
+        "musicbrainz_track_id": null,
+        "title": "Rusalka: Song to the Moon",
+        "work": null
+      },
+      "path": "/music/Anna Netrebko/Opera Arias/01.flac"
+    },
+    {
+      "existing_tags": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "date": "2003"
+      },
+      "matched": false,
+      "meta": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "composer": null,
+        "duration_seconds": null,
+        "extra": {},
+        "genre": null,
+        "match_confidence": null,
+        "movement": null,
+        "musicbrainz_release_id": null,
+        "musicbrainz_track_id": null,
+        "title": "Rom\u00e9o et Juliette: Je veux vivre",
+        "work": null
+      },
+      "path": "/music/Anna Netrebko/Opera Arias/02.flac"
+    },
+    {
+      "existing_tags": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "date": "2003"
+      },
+      "matched": false,
+      "meta": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "composer": null,
+        "duration_seconds": null,
+        "extra": {},
+        "genre": null,
+        "match_confidence": null,
+        "movement": null,
+        "musicbrainz_release_id": null,
+        "musicbrainz_track_id": null,
+        "title": "I puritani: Qui la voce sua soave",
+        "work": null
+      },
+      "path": "/music/Anna Netrebko/Opera Arias/03.flac"
+    },
+    {
+      "existing_tags": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "date": "2003"
+      },
+      "matched": false,
+      "meta": {
+        "album": "Opera Arias",
+        "album_artist": "Anna Netrebko",
+        "artist": "Anna Netrebko",
+        "composer": null,
+        "duration_seconds": null,
+        "extra": {},
+        "genre": null,
+        "match_confidence": null,
+        "movement": null,
+        "musicbrainz_release_id": null,
+        "musicbrainz_track_id": null,
+        "title": "La traviata: Sempre libera",
+        "work": null
+      },
+      "path": "/music/Anna Netrebko/Opera Arias/04.flac"
+    }
+  ],
+  "release_examples": {
+    "musicbrainz:opera-arias-2003": {
+      "artist": "Anna Netrebko; Wiener Philharmoniker; Gianandrea Noseda",
+      "date": "2003",
+      "disc_count": 1,
+      "formats": [
+        "CD"
+      ],
+      "provider": "musicbrainz",
+      "title": "Opera Arias",
+      "track_total": 9
+    },
+    "musicbrainz:wrong-compilation": {
+      "artist": "Various Artists",
+      "date": "1999",
+      "disc_count": 2,
+      "formats": [
+        "CD"
+      ],
+      "provider": "musicbrainz",
+      "title": "Great Opera Arias",
+      "track_total": 40
+    }
+  },
+  "release_scores": {
+    "musicbrainz:opera-arias-2003": 0.9,
+    "musicbrainz:wrong-compilation": 0.95
+  },
+  "schema": "audio-meta.release-selection-case.v1"
+}
+

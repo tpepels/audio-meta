@@ -11,8 +11,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
-from watchdog.observers import Observer
-
 from ..daemon_types import DryRunRecorder, PendingResult, ReleaseExample
 from ..assignment import best_assignment_max_score
 from ..match_utils import (
@@ -31,7 +29,6 @@ from ..pipeline import (
     TrackSkipContext,
 )
 from ..pipeline import TrackSignalContext
-from ..watchdog_handler import WatchHandler
 from ..classical import ClassicalHeuristics
 from ..heuristics import guess_metadata_from_path
 from ..config import Settings
@@ -54,6 +51,8 @@ from .. import deferred as deferred_logic
 from .. import release_scoring as release_scoring_logic
 from .. import directory_identity as directory_identity_logic
 from ..album_batching import AlbumBatcher
+from ..prompt_io import ConsolePromptIO, PromptIO
+from . import runtime as daemon_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +76,7 @@ class AudioMetaDaemon:
         dry_run_output: Optional[Path] = None,
         interactive: bool = False,
         release_cache_enabled: bool = True,
+        prompt_io: PromptIO | None = None,
     ) -> None:
         self.settings = settings
         self.cache = cache or MetadataCache(settings.daemon.cache_path)
@@ -96,12 +96,13 @@ class AudioMetaDaemon:
             plugin_order=dict(settings.daemon.pipeline_order),
         )
         self.queue: asyncio.Queue[DirectoryBatch] = asyncio.Queue()
-        self.observer: Observer | None = None
+        self.observer: object | None = None
         self.dry_run_recorder = (
             DryRunRecorder(dry_run_output) if dry_run_output else None
         )
         self.interactive = interactive
         self.release_cache_enabled = release_cache_enabled
+        self.prompt_io: PromptIO = prompt_io or ConsolePromptIO()
         # Always persist "needs user input" decisions so daemon mode can queue them,
         # and interactive scans can replay them after the scan completes.
         self.defer_prompts = True
@@ -125,9 +126,9 @@ class AudioMetaDaemon:
         logger.debug("Starting one-off scan")
         for batch in self.scanner.iter_directories():
             await self.queue.put(batch)
-        workers = self._start_workers()
+        workers = daemon_runtime.start_workers(self)
         await self.queue.join()
-        await self._stop_workers(workers)
+        await daemon_runtime.stop_workers(workers)
         process_deferred = bool(
             getattr(self.settings.daemon, "process_deferred_prompts_at_end", True)
         )
@@ -140,8 +141,8 @@ class AudioMetaDaemon:
         for batch in self.scanner.iter_directories():
             await self.queue.put(batch)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._bootstrap_watchdog, loop)
-        workers = self._start_workers()
+        await loop.run_in_executor(None, daemon_runtime.bootstrap_watchdog, self, loop)
+        workers = daemon_runtime.start_workers(self)
         try:
             while True:
                 await asyncio.sleep(3600)
@@ -149,51 +150,14 @@ class AudioMetaDaemon:
             logger.debug("Daemon stopping")
         finally:
             if self.observer:
-                self.observer.stop()
-                self.observer.join()
-            await self._stop_workers(workers)
-
-    def _bootstrap_watchdog(self, loop: asyncio.AbstractEventLoop) -> None:
-        handler = WatchHandler(
-            self.queue,
-            self.settings.library.include_extensions,
-            self.scanner,
-            loop=loop,
-        )
-        observer = Observer()
-        for root in self.settings.library.roots:
-            observer.schedule(handler, str(root), recursive=True)
-        observer.start()
-        self.observer = observer
-
-    def _start_workers(self) -> list[asyncio.Task[None]]:
-        concurrency = 1 if self.interactive else self.settings.daemon.worker_concurrency
-        return [asyncio.create_task(self._worker(i)) for i in range(concurrency)]
-
-    async def _stop_workers(self, workers: list[asyncio.Task[None]]) -> None:
-        for worker in workers:
-            worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
-
-    async def _worker(self, worker_id: int) -> None:
-        while True:
-            batch = await self.queue.get()
-            try:
-                if self.cache.is_directory_ignored(batch.directory):
-                    logger.info(
-                        "Skipping ignored directory %s",
-                        self._display_path(batch.directory),
-                    )
-                else:
-                    await asyncio.get_running_loop().run_in_executor(
-                        None, self._process_directory, batch
-                    )
-            except Exception:  # pragma: no cover - logged and ignored
-                logger.exception(
-                    "Worker %s failed to process %s", worker_id, batch.directory
-                )
-            finally:
-                self.queue.task_done()
+                obs = self.observer
+                stop = getattr(obs, "stop", None)
+                join = getattr(obs, "join", None)
+                if callable(stop):
+                    stop()
+                if callable(join):
+                    join()
+            await daemon_runtime.stop_workers(workers)
 
     def _process_directory(
         self, batch: DirectoryBatch, force_prompt: bool = False
@@ -430,25 +394,37 @@ class AudioMetaDaemon:
             or 0.35
         )
         tag_album = existing_tags.get("album")
+        if not isinstance(tag_album, str):
+            tag_album = None
+
         tag_album_artist = existing_tags.get("album_artist") or existing_tags.get(
             "albumartist"
         )
+        if not isinstance(tag_album_artist, str):
+            tag_album_artist = None
         if not tag_album and not tag_album_artist:
             return False
+
         album_mismatch = False
-        artist_mismatch = False
         if tag_album and meta.album:
-            album_mismatch = (
-                self._token_overlap_ratio(tag_album, meta.album) < threshold
-            )
+            album_mismatch = self._token_overlap_ratio(tag_album, meta.album) < threshold
+
+        artist_mismatch = False
         if tag_album_artist and meta.album_artist:
             artist_mismatch = (
                 self._token_overlap_ratio(tag_album_artist, meta.album_artist)
                 < threshold
             )
+
         if tag_album and tag_album_artist:
             return album_mismatch and artist_mismatch
-        return album_mismatch or artist_mismatch
+
+        if tag_album:
+            return album_mismatch
+
+        # Album-artist-only mismatches are too noisy (partial tags, classical
+        # composer-as-album-artist conventions, compilations, etc.).
+        return False
 
     def _should_review_classical_credits(self, metas: list[TrackMetadata]) -> bool:
         min_tracks = int(
@@ -526,47 +502,14 @@ class AudioMetaDaemon:
     def _confirm_classical_credits(
         self, directory: Path, metas: list[TrackMetadata]
     ) -> bool:
-        try:
-            display = self._display_path(directory)
-            stats = self._classical_credits_stats(metas)
-            print(f"\nClassical credits check for {display}:")
-            print(f"- Classical tracks: {stats['classical_tracks']}/{len(metas)}")
-            print(
-                f"- Performer hint coverage: {stats['coverage']:.0%} ({stats['hinted_tracks']} hinted, {stats['missing_hints']} missing)"
-            )
-            if stats["consensus"] is not None:
-                print(f"- Performer hint consensus: {float(stats['consensus']):.0%}")
-            top = list(stats["top_hints"])
-            if top:
-                print("- Top performer candidates:")
-                for hint, count in top[:3]:
-                    print(f"  - {hint} ({count})")
-            composer = next((m.composer for m in metas if m.composer), None)
-            if composer:
-                print(f"- Composer hint: {composer}")
-            print("Proceed anyway? [y/N]: ", end="")
-            choice = input().strip().lower()
-            return choice in {"y", "yes"}
-        except Exception:
-            return False
+        from .prompting_misc import confirm_classical_credits
+
+        return confirm_classical_credits(self, directory, metas)
 
     def _enrich_track_default(self, meta: TrackMetadata) -> Optional[LookupResult]:
-        result = self.musicbrainz.enrich(meta)
-        if result and self.discogs and self._needs_supplement(meta):
-            try:
-                supplement = self.discogs.supplement(meta)
-                if supplement:
-                    result = LookupResult(
-                        meta, score=max(result.score, supplement.score)
-                    )
-            except Exception:
-                logger.exception("Discogs supplement failed for %s", meta.path)
-        if not result and self.discogs:
-            try:
-                result = self.discogs.enrich(meta)
-            except Exception:
-                logger.exception("Discogs lookup failed for %s", meta.path)
-        return result
+        from .enrichment import enrich_track_default
+
+        return enrich_track_default(self, meta)
 
     def _is_singleton_directory(self, batch: DirectoryBatch) -> bool:
         threshold = max(0, self.settings.organizer.singleton_threshold)
@@ -1383,131 +1326,27 @@ class AudioMetaDaemon:
         discogs_details: dict[str, dict],
         *,
         files: Optional[list[Path]] = None,
+        pending_results: Optional[list[PendingResult]] = None,
+        tag_hints: Optional[dict[str, list[str]]] = None,
         prompt_title: str = "Ambiguous release",
         coverage: Optional[float] = None,
     ) -> Optional[tuple[str, str]]:
-        from ..prompting import (
-            invalid_release_choice_message,
-            manual_release_choice_help,
-        )
-        from ..release_prompt import (
-            append_discogs_search_options,
-            append_mb_search_options,
-            build_release_prompt_options,
-        )
+        from .prompting_release import ReleasePrompter
 
-        show_urls = bool(getattr(self.settings.daemon, "prompt_show_urls", True))
-        expand_mb = bool(
-            getattr(self.settings.daemon, "prompt_expand_mb_candidates", True)
-        )
-        mb_search_limit = int(
-            getattr(self.settings.daemon, "prompt_mb_search_limit", 6)
-        )
-        if sample_meta is None:
-            from .prompt_preview import select_prompt_preview_files
-
-            preview_files = select_prompt_preview_files(
-                directory,
-                files,
-                include_extensions=self.settings.library.include_extensions,
-            )
-            if preview_files:
-                sample_meta = self._synthesize_sample_meta(
-                    directory, preview_files, dir_track_count
-                )
-
-        options = build_release_prompt_options(
+        return ReleasePrompter(self).resolve_release_interactively(
+            directory,
             candidates,
             release_examples,
-            split_release_key=self._split_release_key,
-            parse_year=self._parse_year,
-            disc_label=self._disc_label,
-            format_option_label=self._format_option_label,
-            show_urls=show_urls,
+            sample_meta,
+            dir_track_count,
+            dir_year,
+            discogs_details,
+            files=files,
+            pending_results=pending_results,
+            tag_hints=tag_hints,
+            prompt_title=prompt_title,
+            coverage=coverage,
         )
-        if (
-            sample_meta
-            and expand_mb
-            and (len(options) < 3 or (coverage is not None and coverage < 0.5))
-        ):
-            artist_hint, album_hint = self._directory_hints(sample_meta, directory)
-            if artist_hint or album_hint:
-                try:
-                    mb_candidates = self.musicbrainz.search_release_candidates(
-                        artist_hint, album_hint, limit=mb_search_limit
-                    )
-                except Exception:  # pragma: no cover
-                    mb_candidates = []
-                append_mb_search_options(
-                    options,
-                    mb_candidates,
-                    show_urls=show_urls,
-                    parse_year=self._parse_year,
-                    disc_label=self._disc_label,
-                    format_option_label=self._format_option_label,
-                )
-        if sample_meta and self.discogs:
-            append_discogs_search_options(
-                options,
-                self._discogs_candidates(sample_meta),
-                show_urls=show_urls,
-                format_option_label=self._format_option_label,
-            )
-        if not options:
-            self._record_skip(directory, "No interactive release options available")
-            logger.warning("No interactive options available for %s", directory)
-            return None
-        options.sort(key=lambda opt: float(opt.score or 0.0), reverse=True)
-        year_hint = f"{dir_year}" if dir_year else "unknown"
-        display = self._display_path(directory)
-        print(
-            f"\n{prompt_title} for {display} – {dir_track_count} tracks detected, year hint {year_hint}:"
-        )
-        if coverage is not None:
-            print(f"  Coverage: {coverage:.0%} of tracks matched by title/duration")
-        self._print_prompt_track_preview(directory, files)
-        if not self.discogs:
-            print("  (Discogs disabled; set providers.discogs_token to enable)")
-        for option in options:
-            print(f"  {option.idx}. {option.label}")
-        print("  0. Skip this directory")
-        print("  d. Delete this directory")
-        print("  a. Archive this directory")
-        print("  i. Ignore this directory")
-        print(manual_release_choice_help(discogs_enabled=bool(self.discogs)))
-        while True:
-            choice = input("Select release (0=skip): ").strip()
-            if choice.lower() in {"0", "s", "skip"}:
-                return None
-            if choice.lower() in {"d", "del", "delete"}:
-                if self._delete_directory(directory):
-                    self._record_skip(directory, "Directory deleted per user request")
-                return None
-            if choice.lower() in {"a", "archive"}:
-                if not self._archive_directory(directory):
-                    continue
-                self.cache.ignore_directory(directory, "archived")
-                return None
-            if choice.lower() in {"i", "ignore"}:
-                self.cache.ignore_directory(directory, "user request")
-                logger.info(
-                    "Ignoring %s per user request", self._display_path(directory)
-                )
-                return None
-            manual = self._parse_manual_release_choice(choice)
-            if manual:
-                return manual
-            if not choice.isdigit():
-                print(
-                    invalid_release_choice_message(discogs_enabled=bool(self.discogs))
-                )
-                continue
-            number = int(choice)
-            match = next((opt for opt in options if opt.idx == number), None)
-            if not match:
-                print("Selection out of range.")
-                continue
-            return match.provider, match.release_id
 
     def _resolve_unmatched_directory(
         self,
@@ -1518,97 +1357,15 @@ class AudioMetaDaemon:
         *,
         files: Optional[list[Path]] = None,
     ) -> Optional[tuple[str, str]]:
-        from ..prompting import (
-            invalid_release_choice_message,
-            manual_release_choice_help,
-        )
-        from ..release_prompt import (
-            ReleasePromptOption,
-            append_discogs_search_options,
-            append_mb_search_options,
-        )
+        from .prompting_release import ReleasePrompter
 
-        if sample_meta is None:
-            from .prompt_preview import select_prompt_preview_files
-
-            preview_files = select_prompt_preview_files(
-                directory,
-                files,
-                include_extensions=self.settings.library.include_extensions,
-            )
-            if preview_files:
-                sample_meta = self._synthesize_sample_meta(
-                    directory, preview_files, dir_track_count
-                )
-        if not sample_meta:
-            self._record_skip(directory, "No sample metadata for manual selection")
-            return None
-        artist_hint, album_hint = self._directory_hints(sample_meta, directory)
-        show_urls = bool(getattr(self.settings.daemon, "prompt_show_urls", True))
-        mb_search_limit = int(
-            getattr(self.settings.daemon, "prompt_mb_search_limit", 6)
+        return ReleasePrompter(self).resolve_unmatched_directory(
+            directory,
+            sample_meta,
+            dir_track_count,
+            dir_year,
+            files=files,
         )
-        options: list[ReleasePromptOption] = []
-        mb_candidates = self.musicbrainz.search_release_candidates(
-            artist_hint, album_hint, limit=mb_search_limit
-        )
-        append_mb_search_options(
-            options,
-            mb_candidates,
-            show_urls=show_urls,
-            parse_year=self._parse_year,
-            disc_label=self._disc_label,
-            format_option_label=self._format_option_label,
-        )
-        if self.discogs and sample_meta:
-            append_discogs_search_options(
-                options,
-                self._discogs_candidates(sample_meta),
-                show_urls=show_urls,
-                format_option_label=self._format_option_label,
-            )
-        if not options:
-            self._record_skip(directory, "No manual candidates available")
-            logger.warning(
-                "No manual candidates available for %s (artist hint=%s, album hint=%s)",
-                directory,
-                artist_hint,
-                album_hint,
-            )
-            return None
-        options.sort(key=lambda opt: float(opt.score or 0.0), reverse=True)
-        year_hint = f"{dir_year}" if dir_year else "unknown"
-        display = self._display_path(directory)
-        print(
-            f"\nNo automatic metadata match for {display} "
-            f"(artist hint: {artist_hint or 'unknown'}, album hint: {album_hint or 'unknown'}, "
-            f"{dir_track_count} tracks detected, year hint {year_hint})."
-        )
-        self._print_prompt_track_preview(directory, files)
-        print("Select a release to apply:")
-        for option in options:
-            print(f"  {option.idx}. {option.label}")
-        print("  0. Skip this directory")
-        print(manual_release_choice_help(discogs_enabled=bool(self.discogs)))
-        while True:
-            choice = input("Select release (0=skip): ").strip()
-            if choice.lower() in {"0", "s", "skip"}:
-                self._record_skip(directory, "User skipped manual release selection")
-                return None
-            manual = self._parse_manual_release_choice(choice)
-            if manual:
-                return manual
-            if not choice.isdigit():
-                print(
-                    invalid_release_choice_message(discogs_enabled=bool(self.discogs))
-                )
-                continue
-            number = int(choice)
-            match = next((opt for opt in options if opt.idx == number), None)
-            if not match:
-                print("Selection out of range.")
-                continue
-            return match.provider, match.release_id
 
     @staticmethod
     def _synthesize_sample_meta(
@@ -1628,33 +1385,6 @@ class AudioMetaDaemon:
         if guess.track_number is not None:
             meta.track_number = int(guess.track_number)
         return meta
-
-    def _prompt_preview_count(self) -> int:
-        raw = getattr(self.settings.daemon, "prompt_preview_tracks", 3)
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 3
-        return max(0, min(value, 20))
-
-    def _print_prompt_track_preview(
-        self, directory: Path, files: Optional[list[Path]]
-    ) -> None:
-        from .prompt_preview import build_prompt_track_preview_lines
-
-        lines = build_prompt_track_preview_lines(
-            directory,
-            files,
-            include_extensions=self.settings.library.include_extensions,
-            limit=self._prompt_preview_count(),
-            read_existing_tags=self._read_existing_tags,
-            apply_tag_hints=self._apply_tag_hints,
-        )
-        if not lines:
-            return
-        print("  Sample tracks:")
-        for line in lines:
-            print(f"    - {line}")
 
     def _directory_hints(
         self, sample_meta: TrackMetadata, directory: Path
@@ -2053,23 +1783,9 @@ class AudioMetaDaemon:
         release_key: str,
         unmatched: list[PendingResult],
     ) -> bool:
-        provider, release_id = self._split_release_key(release_key)
-        display_name = self._display_path(directory)
-        sample_titles = []
-        for pending in unmatched[:5]:
-            title = pending.meta.title or pending.meta.path.name
-            sample_titles.append(f"- {title}")
-        print(
-            f"\n{ANSI_YELLOW if self._use_color else ''}Only {len(unmatched)} file(s) in {display_name} "
-            f"failed to match release {provider}:{release_id}.{ANSI_RESET if self._use_color else ''}"
-        )
-        if sample_titles:
-            print("Unmatched tracks:")
-            for entry in sample_titles:
-                print(f"  {entry}")
-        print("Proceed with the matched tracks? [y/N] ", end="")
-        choice = input().strip().lower()
-        return choice in {"y", "yes"}
+        from .prompting_misc import prompt_on_unmatched_release
+
+        return prompt_on_unmatched_release(self, directory, release_key, unmatched)
 
     def _delete_directory(self, directory: Path) -> bool:
         try:
@@ -2082,7 +1798,9 @@ class AudioMetaDaemon:
 
     def _archive_directory(self, directory: Path) -> bool:
         if not self.archive_root:
-            print("Archive root not configured; set organizer.archive_root in config.")
+            self.prompt_io.print(
+                "Archive root not configured; set organizer.archive_root in config."
+            )
             return False
         archive_root = self.archive_root
         archive_root.mkdir(parents=True, exist_ok=True)
@@ -2228,7 +1946,7 @@ class AudioMetaDaemon:
                 release_id = value[len(prefix) :].strip()
                 if release_id.isdigit():
                     return "discogs", release_id
-                print("Discogs IDs must be numeric.")
+                self.prompt_io.print("Discogs IDs must be numeric.")
                 return None
         if re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
@@ -2298,10 +2016,10 @@ class AudioMetaDaemon:
             self.skip_reasons.clear()
         if not entries:
             return
-        print("\n\033[33mDirectories skipped:\033[0m")
+        self.prompt_io.print("\n\033[33mDirectories skipped:\033[0m")
         for directory, reason in sorted(entries):
             display = self._display_path(directory)
-            print(f" - {display}: {reason}")
+            self.prompt_io.print(f" - {display}: {reason}")
 
     def _cached_release_for_directory(
         self, directory: Path

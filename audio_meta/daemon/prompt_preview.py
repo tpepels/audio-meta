@@ -28,8 +28,14 @@ def build_prompt_track_preview_lines(
     lines: list[str] = []
     for file_path in preview_files:
         meta = TrackMetadata(path=file_path)
-        tags = dict(read_existing_tags(meta) or {})
-        apply_tag_hints(meta, tags)
+        try:
+            tags = dict(read_existing_tags(meta) or {})
+        except Exception:
+            tags = {}
+        try:
+            apply_tag_hints(meta, tags)
+        except Exception:
+            pass
         guess = guess_metadata_from_path(file_path)
         title = meta.title or guess.title or file_path.stem
         track_number = meta.track_number or guess.track_number

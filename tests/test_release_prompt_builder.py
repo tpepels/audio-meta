@@ -61,8 +61,9 @@ class TestReleasePromptBuilder(unittest.TestCase):
             )
         ]
         mb_candidates = [
-            {"id": "rid", "title": "Album", "artist": "Artist"},
+            {"id": "rid", "title": "Album", "artist": "Artist", "score": 0.0},
             {"id": "rid2", "title": "Album2", "artist": "Artist2", "score": 0.5},
+            {"id": "rid3", "title": "Album3", "artist": "Artist3", "score": 0.01},
         ]
 
         def fmt(
@@ -83,6 +84,7 @@ class TestReleasePromptBuilder(unittest.TestCase):
             options,
             mb_candidates,
             show_urls=False,
+            min_score=0.05,
             parse_year=lambda _v: "?",
             disc_label=lambda _n: None,
             format_option_label=fmt,

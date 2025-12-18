@@ -176,6 +176,8 @@ def decide_release(
                 files=[p.meta.path for p in pending_results]
                 if pending_results
                 else None,
+                pending_results=pending_results,
+                tag_hints=tag_hints,
                 prompt_title="Low-coverage match",
                 coverage=coverage,
             )
@@ -257,6 +259,8 @@ def decide_release(
                 files=[p.meta.path for p in pending_results]
                 if pending_results
                 else None,
+                pending_results=pending_results,
+                tag_hints=tag_hints,
                 prompt_title="Confirm match",
             )
             if selection is None:
@@ -318,6 +322,8 @@ def decide_release(
                 files=[p.meta.path for p in pending_results]
                 if pending_results
                 else None,
+                pending_results=pending_results,
+                tag_hints=tag_hints,
             )
             if selection is None:
                 daemon._record_skip(

@@ -46,6 +46,29 @@ class TestFingerprintMismatchPolicy(unittest.TestCase):
         )
         self.assertFalse(daemon._fingerprint_conflicts_with_tags({}, meta))
 
+    def test_no_conflict_when_only_album_artist_tag_present(self) -> None:
+        daemon = self._daemon(threshold=0.6)
+        tags = {"album_artist": "Jean-Philippe Rameau"}
+        meta = TrackMetadata(
+            path=Path("/music/x.mp3"),
+            album="111 Years of Deutsche Grammophon",
+            album_artist="Various Artists",
+        )
+        self.assertFalse(daemon._fingerprint_conflicts_with_tags(tags, meta))
+
+    def test_no_conflict_when_album_matches_but_album_artist_differs(self) -> None:
+        daemon = self._daemon(threshold=0.6)
+        tags = {
+            "album": "111 Years of Deutsche Grammophon",
+            "album_artist": "Jean-Philippe Rameau",
+        }
+        meta = TrackMetadata(
+            path=Path("/music/x.mp3"),
+            album="111 Years of Deutsche Grammophon",
+            album_artist="Various Artists",
+        )
+        self.assertFalse(daemon._fingerprint_conflicts_with_tags(tags, meta))
+
 
 if __name__ == "__main__":
     unittest.main()
