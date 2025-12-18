@@ -16,13 +16,13 @@ class DefaultPlannerPlugin(PlannerPlugin):
         daemon = ctx.daemon
         planned: list[PlannedUpdate] = []
 
+        classical_flags: dict[object, bool] = {}
+        composers: list[str] = []
+        performers: list[str] = []
+
         for pending in ctx.pending_results:
             meta = pending.meta
-            result = pending.result
             if not pending.matched:
-                logger.warning(
-                    "No metadata match for %s; leaving file untouched", meta.path
-                )
                 continue
 
             if ctx.best_release_key and ctx.applied_provider and ctx.applied_release_id:
@@ -36,6 +36,35 @@ class DefaultPlannerPlugin(PlannerPlugin):
                     meta.musicbrainz_release_id = None
 
             is_classical = daemon.heuristics.adapt_metadata(meta)
+            classical_flags[meta.path] = is_classical
+
+            if meta.composer:
+                composers.append(meta.composer)
+            if meta.album_artist:
+                performers.append(meta.album_artist)
+            if meta.artist:
+                performers.append(meta.artist)
+            if meta.conductor:
+                performers.append(meta.conductor)
+            if meta.performers:
+                performers.extend(meta.performers)
+
+        daemon.organizer.prime_canonical_people(
+            composers=composers,
+            performers=performers,
+        )
+
+        for pending in ctx.pending_results:
+            meta = pending.meta
+            result = pending.result
+            if not pending.matched:
+                logger.warning(
+                    "No metadata match for %s; leaving file untouched", meta.path
+                )
+                continue
+
+            is_classical = bool(classical_flags.get(meta.path, False))
+            daemon.organizer.canonicalize_people_fields(meta)
             tag_changes = daemon.tag_writer.diff(meta)
             target_path = daemon.organizer.plan_target(meta, is_classical)
 

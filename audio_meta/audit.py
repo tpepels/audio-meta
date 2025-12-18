@@ -17,6 +17,8 @@ from .models import TrackMetadata
 from .organizer import Organizer
 from .tagging import TagWriter
 from .providers.musicbrainz import MusicBrainzClient
+from .providers.discogs import DiscogsClient
+from .match_utils import normalize_match_text, title_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ class SingletonEntry:
     target: Optional[Path]
     canonical_path: Optional[Path]
     release_home: Optional[Path]
+    release_provider: Optional[str]
     release_id: Optional[str]
 
 
@@ -68,6 +71,11 @@ class LibraryAuditor:
                 logger.warning(
                     "MusicBrainz lookups disabled for singleton repair: %s", exc
                 )
+        self.discogs = None
+        try:
+            self.discogs = DiscogsClient(settings.providers, cache=self.cache)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Discogs lookups disabled for singleton repair: %s", exc)
         self.extensions = {ext.lower() for ext in settings.library.include_extensions}
         self.library_roots = [root.resolve() for root in settings.library.roots]
 
@@ -259,12 +267,20 @@ class LibraryAuditor:
                     self.cache.get_directory_release(directory) if self.cache else None
                 )
                 release_id: Optional[str] = None
+                release_provider: Optional[str] = None
                 if release_entry:
-                    _, release_id, _ = release_entry
+                    release_provider, release_id, _ = release_entry
                 if not release_id and meta.musicbrainz_release_id:
+                    release_provider = "musicbrainz"
                     release_id = meta.musicbrainz_release_id
                 if not release_id:
+                    release_provider = "musicbrainz"
                     release_id = self._ensure_release_id(directory, meta)
+                if not release_id and self.discogs:
+                    release_provider = "discogs"
+                    release_id = self._ensure_discogs_single_release_id(
+                        directory, meta
+                    )
                 pending.append(
                     {
                         "directory": directory,
@@ -273,6 +289,7 @@ class LibraryAuditor:
                         "classical": classical,
                         "canonical": canonical,
                         "release_id": release_id,
+                        "release_provider": release_provider,
                         "group_key": group_key,
                     }
                 )
@@ -282,6 +299,7 @@ class LibraryAuditor:
             meta = record["meta"]
             canonical = record["canonical"]
             release_id = record["release_id"]
+            release_provider = record["release_provider"]
             group_key = record["group_key"]
             target: Optional[Path] = None
             release_home = self._find_release_home(release_id, directory)
@@ -312,6 +330,7 @@ class LibraryAuditor:
                     target=target,
                     canonical_path=canonical,
                     release_home=release_home,
+                    release_provider=release_provider,
                     release_id=release_id,
                 )
             )
@@ -396,6 +415,84 @@ class LibraryAuditor:
                 directory, "musicbrainz", release_id, score
             )
         return release_id
+
+    def _ensure_discogs_single_release_id(
+        self, directory: Path, meta: TrackMetadata
+    ) -> Optional[str]:
+        if not self.discogs:
+            return None
+        artist = meta.artist or meta.album_artist
+        title = meta.title
+        album = meta.album
+        try:
+            candidates = self.discogs.search_candidates(
+                artist=artist, album=album, title=title, limit=8
+            )
+        except Exception:  # pragma: no cover
+            return None
+
+        def is_single_format(cand: dict) -> bool:
+            formats = cand.get("format") or cand.get("formats") or []
+            if isinstance(formats, str):
+                formats = [formats]
+            for fmt in formats:
+                if not isinstance(fmt, str):
+                    continue
+                lower = fmt.lower()
+                if "single" in lower:
+                    return True
+            return False
+
+        ranked = []
+        needle = normalize_match_text(title or "")
+        for cand in candidates:
+            rid = cand.get("id")
+            if rid is None:
+                continue
+            base = 0.1
+            if is_single_format(cand):
+                base += 0.2
+            label = cand.get("title") or ""
+            if needle and label:
+                base += 0.2 * (title_similarity(needle, label) or 0.0)
+            ranked.append((float(base), int(rid)))
+        ranked.sort(reverse=True)
+
+        best_id: Optional[int] = None
+        best_score = 0.0
+        best_details: Optional[dict] = None
+
+        for base_score, rid in ranked[:4]:
+            details = self.discogs.get_release(int(rid))
+            if not details:
+                continue
+            tracklist = details.get("tracklist") or []
+            match = 0.0
+            if needle and tracklist:
+                for track in tracklist:
+                    if track.get("type_", "track") not in (None, "", "track"):
+                        continue
+                    t = track.get("title") or ""
+                    score = title_similarity(needle, normalize_match_text(t)) or 0.0
+                    match = max(match, float(score))
+            score = base_score + 0.7 * match
+            if score > best_score:
+                best_score = score
+                best_id = int(rid)
+                best_details = details
+
+        if best_id is None or best_score < 0.65:
+            return None
+        if best_details:
+            try:
+                self.discogs.apply_release_details(meta, best_details, allow_overwrite=False)
+            except Exception:  # pragma: no cover
+                pass
+        if self.cache:
+            self.cache.set_directory_release(
+                directory, "discogs", str(best_id), float(best_score)
+            )
+        return str(best_id)
 
     def _find_release_home(
         self, release_id: Optional[str], current_dir: Path

@@ -48,6 +48,9 @@ class Organizer:
     ) -> Optional[Path]:
         if not self.enabled:
             return None
+        # Ensure people fields have stable spelling so that both tags and directories
+        # converge on the same canonical representation across the library.
+        self.canonicalize_people_fields(meta)
         target_dir = self._build_directory(meta, is_classical)
         if not target_dir:
             return None
@@ -306,6 +309,8 @@ class Organizer:
     def _canonicalize_label(self, value: str, label_type: str, parent: Path) -> str:
         if value in self._unknown_labels:
             return value
+        if label_type in {"composer", "performer"}:
+            value = self._canonicalize_person_name(value)
         normalized = self._normalize_token(value)
         if not normalized:
             return value
@@ -320,6 +325,109 @@ class Organizer:
         if token and self.cache and canonical not in self._unknown_labels:
             self.cache.set_canonical_name(token, canonical)
         return canonical
+
+    def prime_canonical_people(self, *, composers: list[str], performers: list[str]) -> None:
+        if not self.cache:
+            return
+        parent = self.target_root
+        grouped: dict[str, list[str]] = {}
+
+        def add(label_type: str, raw: str) -> None:
+            for token_value in self._split_people(raw):
+                candidate = self._canonicalize_person_name(token_value)
+                normalized = self._normalize_token(candidate)
+                if not normalized:
+                    continue
+                token = self._canonical_token(label_type, parent, normalized)
+                grouped.setdefault(token, []).append(candidate)
+
+        for value in composers:
+            if value:
+                add("composer", value)
+        for value in performers:
+            if value:
+                add("performer", value)
+
+        for token, seen in grouped.items():
+            best = self._choose_best_person_label(seen)
+            if best and best not in self._unknown_labels:
+                self.cache.set_canonical_name(token, best)
+
+    def canonicalize_people_fields(self, meta: TrackMetadata) -> None:
+        meta.composer = self._canonicalize_people_string(meta.composer, "composer")
+        meta.album_artist = self._canonicalize_people_string(
+            meta.album_artist, "performer"
+        )
+        meta.artist = self._canonicalize_people_string(meta.artist, "performer")
+        if meta.conductor:
+            meta.conductor = self._canonicalize_people_string(
+                meta.conductor, "performer"
+            )
+        if meta.performers:
+            canonical = []
+            for entry in meta.performers:
+                updated = self._canonicalize_people_string(entry, "performer")
+                if updated:
+                    canonical.extend(self._split_people(updated))
+            meta.performers = canonical or meta.performers
+
+    def _canonicalize_people_string(
+        self, value: Optional[str], label_type: str
+    ) -> Optional[str]:
+        if not value:
+            return value
+        parts = []
+        for token_value in self._split_people(value):
+            token_value = self._canonicalize_person_name(token_value)
+            canonical = self._canonicalize_label(token_value, label_type, self.target_root)
+            parts.append(canonical)
+        parts = [p for p in parts if p and p not in self._unknown_labels]
+        if not parts:
+            return value
+        unique: list[str] = []
+        for p in parts:
+            if p not in unique:
+                unique.append(p)
+        return "; ".join(unique)
+
+    @staticmethod
+    def _split_people(value: str) -> list[str]:
+        if not value:
+            return []
+        normalized = value.replace(" / ", ";").replace("/", ";")
+        raw = [chunk.strip() for chunk in normalized.split(";") if chunk.strip()]
+        return raw
+
+    @staticmethod
+    def _canonicalize_person_name(value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return value
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"\s+\(\d+\)\s*$", "", cleaned).strip()
+        if ";" in cleaned:
+            return cleaned
+        if cleaned.count(",") == 1:
+            left, right = [part.strip() for part in cleaned.split(",", 1)]
+            if left and right and " " not in left:
+                return f"{right} {left}".strip()
+        return cleaned
+
+    @staticmethod
+    def _choose_best_person_label(choices: list[str]) -> Optional[str]:
+        cleaned = [c.strip() for c in choices if isinstance(c, str) and c.strip()]
+        if not cleaned:
+            return None
+
+        def score(value: str) -> tuple[int, int, int, int, str]:
+            has_comma = 1 if "," in value else 0
+            all_caps = 1 if value.isupper() else 0
+            word_count = len([p for p in value.split(" ") if p])
+            length = len(value)
+            return (has_comma, all_caps, -word_count, -length, value.casefold())
+
+        cleaned.sort(key=score)
+        return cleaned[0]
 
     def _canonical_token(
         self, label_type: str, parent: Path, normalized_value: str

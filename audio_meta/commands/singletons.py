@@ -19,7 +19,9 @@ def run(auditor: LibraryAuditor) -> None:
         if entry.meta.composer:
             print(f"    Composer: {entry.meta.composer}")
         print(f"    Title: {entry.meta.title or '<unknown>'}")
-        if entry.release_id:
+        if entry.release_id and entry.release_provider:
+            print(f"    Release: {entry.release_provider}:{entry.release_id}")
+        elif entry.release_id:
             print(f"    Release ID: {entry.release_id}")
         if entry.target:
             target_label = auditor.display_path(entry.target.parent)

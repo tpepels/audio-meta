@@ -26,6 +26,68 @@ class ReleasePrompter:
     def __init__(self, daemon) -> None:
         self.daemon = daemon
 
+    def _auto_accept_only_option(
+        self,
+        *,
+        prompt_title: str,
+        option: ReleasePromptOption,
+        diagnostics: Optional[dict[str, ReleasePromptDiagnostics]],
+    ) -> bool:
+        if not bool(getattr(self.daemon, "_processing_deferred", False)):
+            return False
+        if prompt_title.lower().startswith("confirm"):
+            return False
+        enabled = bool(
+            getattr(
+                getattr(self.daemon.settings, "daemon", object()),
+                "deferred_auto_accept_single_suggestion",
+                True,
+            )
+        )
+        if not enabled:
+            return False
+        if not diagnostics:
+            return False
+        key = self.daemon._release_key(option.provider, option.release_id)
+        diag = diagnostics.get(key)
+        if not diag or not isinstance(diag.coverage, float) or not isinstance(
+            diag.avg_confidence, float
+        ):
+            return False
+        min_cov = float(
+            getattr(
+                getattr(self.daemon.settings, "daemon", object()),
+                "deferred_auto_accept_min_coverage",
+                0.8,
+            )
+        )
+        min_avg = float(
+            getattr(
+                getattr(self.daemon.settings, "daemon", object()),
+                "deferred_auto_accept_min_avg_confidence",
+                0.85,
+            )
+        )
+        min_cons = float(
+            getattr(
+                getattr(self.daemon.settings, "daemon", object()),
+                "deferred_auto_accept_min_consensus",
+                0.6,
+            )
+        )
+        reasons = [r for r in (diag.reasons or []) if isinstance(r, str)]
+        disqualifying = any(
+            ("mismatch" in r.lower()) or r.lower().startswith(("tracks ", "year "))
+            for r in reasons
+        )
+        if disqualifying:
+            return False
+        if diag.coverage < min_cov or diag.avg_confidence < min_avg:
+            return False
+        if isinstance(diag.consensus, float) and diag.consensus < min_cons:
+            return False
+        return True
+
     def resolve_release_interactively(
         self,
         directory: Path,
@@ -120,6 +182,18 @@ class ReleasePrompter:
             return None
 
         options.sort(key=lambda opt: float(opt.score or 0.0), reverse=True)
+        if len(options) == 1 and self._auto_accept_only_option(
+            prompt_title=prompt_title,
+            option=options[0],
+            diagnostics=diagnostics_map,
+        ):
+            logger.info(
+                "Auto-accepting only candidate for %s during deferred replay: %s:%s",
+                directory,
+                options[0].provider,
+                options[0].release_id,
+            )
+            return options[0].provider, options[0].release_id
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self.daemon._display_path(directory)
         self.daemon.prompt_io.print(
