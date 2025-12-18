@@ -108,6 +108,10 @@ def main() -> None:
     subparsers.add_parser(
         "run", help="Run a scan followed by an audit with automatic fixes"
     )
+    subparsers.add_parser(
+        "deferred",
+        help="Process deferred prompt queue (manual confirmations) without scanning",
+    )
     audit_parser = subparsers.add_parser(
         "audit", help="Report directories containing mixed album/artist metadata"
     )
@@ -212,7 +216,13 @@ def main() -> None:
         finally:
             cache.close()
         return
-    requires_providers = args.command in {"scan", "daemon", "run", "export-testcase"}
+    requires_providers = args.command in {
+        "scan",
+        "daemon",
+        "run",
+        "deferred",
+        "export-testcase",
+    }
     if requires_providers:
         validate_providers(settings.providers)
     if args.clear_move_cache:
@@ -225,6 +235,7 @@ def main() -> None:
         "scan",
         "daemon",
         "run",
+        "deferred",
         "audit",
         "audit-events",
         "singletons",
@@ -233,10 +244,10 @@ def main() -> None:
     }
     if uses_app:
         app = AudioMetaApp.create(settings)
-    if args.command in {"scan", "daemon", "run", "export-testcase"} and app:
+    if args.command in {"scan", "daemon", "run", "deferred", "export-testcase"} and app:
         daemon = app.get_daemon(
             dry_run_output=args.dry_run_output,
-            interactive=(args.command in {"scan", "run"}),
+            interactive=(args.command in {"scan", "run", "deferred"}),
             release_cache_enabled=not args.disable_release_cache,
         )
 
@@ -249,6 +260,8 @@ def main() -> None:
             case "run":
                 asyncio.run(daemon.run_scan())
                 cmd_audit_run.run(app.get_auditor(), fix=True)
+            case "deferred":
+                daemon._process_deferred_directories()
             case "audit":
                 cmd_audit_run.run(app.get_auditor(), fix=getattr(args, "fix", False))
             case "audit-events":

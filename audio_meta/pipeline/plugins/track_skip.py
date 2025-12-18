@@ -16,6 +16,8 @@ class DefaultTrackSkipPolicyPlugin(TrackSkipPolicyPlugin):
 
     def should_skip(self, ctx: TrackSkipContext) -> Optional[TrackSkipDecision]:
         daemon = ctx.daemon
+        if getattr(getattr(ctx, "directory_ctx", None), "force_prompt", False):
+            return TrackSkipDecision(should_skip=False, reason="force_prompt")
         if daemon.dry_run_recorder:
             return TrackSkipDecision(should_skip=False)
 

@@ -49,6 +49,10 @@ class DaemonSettings(BaseModel):
     classical_credits_min_coverage: float = 0.6
     classical_credits_min_consensus: float = 0.7
     classical_credits_action: str = "defer"
+    prompt_show_urls: bool = True
+    prompt_expand_mb_candidates: bool = True
+    prompt_mb_search_limit: int = 6
+    process_deferred_prompts_at_end: bool = True
 
     @field_validator("cache_path", mode="before")
     @classmethod

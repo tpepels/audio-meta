@@ -1,7 +1,8 @@
 import unittest
 from pathlib import Path
 
-from audio_meta.daemon_types import ReleaseExample
+from audio_meta.daemon_types import PendingResult, ReleaseExample
+from audio_meta.models import TrackMetadata
 from audio_meta.release_selection import _auto_pick_best_fit_release, decide_release
 
 
@@ -211,7 +212,13 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
                 is_singleton=False,
                 dir_track_count=10,
                 dir_year=2000,
-                pending_results=[],
+                pending_results=[
+                    PendingResult(
+                        meta=TrackMetadata(path=Path("/music/01.mp3")),
+                        result=None,
+                        matched=False,
+                    )
+                ],
                 release_scores={"musicbrainz:mb1": 0.9},
                 release_examples={
                     "musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 10)

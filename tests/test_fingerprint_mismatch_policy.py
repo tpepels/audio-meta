@@ -27,7 +27,9 @@ class TestFingerprintMismatchPolicy(unittest.TestCase):
                 fingerprint_mismatch_action="defer",
             ),
         )
-        return AudioMetaDaemon(settings, interactive=False)
+        daemon = AudioMetaDaemon(settings, interactive=False)
+        self.addCleanup(daemon.cache.close)
+        return daemon
 
     def test_conflict_when_album_and_artist_both_mismatch(self) -> None:
         daemon = self._daemon(threshold=0.6)

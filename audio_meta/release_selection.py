@@ -131,7 +131,7 @@ def decide_release(
             ambiguous_candidates = [(fit_pick, best_score)]
     coverage_threshold = 0.0 if is_singleton else 0.7
     coverage = coverage_map.get(best_release_id, 1.0) if best_release_id else 1.0
-    if best_release_id and coverage < coverage_threshold:
+    if best_release_id and pending_results and coverage < coverage_threshold:
         if (
             daemon.defer_prompts
             and not force_prompt
@@ -171,6 +171,8 @@ def decide_release(
                 dir_track_count,
                 effective_dir_year,
                 discogs_details,
+                prompt_title="Low-coverage match",
+                coverage=coverage,
             )
             if selection is None:
                 daemon._record_skip(
@@ -247,6 +249,7 @@ def decide_release(
                 dir_track_count,
                 effective_dir_year,
                 discogs_details,
+                prompt_title="Confirm match",
             )
             if selection is None:
                 daemon._record_skip(

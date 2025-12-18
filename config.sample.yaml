@@ -31,6 +31,16 @@ classical:
 daemon:
   worker_concurrency: 4
   cache_path: ./cache/cache.sqlite3
+  # Prompt UI:
+  # - show_urls: include clickable MusicBrainz/Discogs links next to options.
+  # - expand_mb_candidates: when choices are sparse (or coverage is low), add MusicBrainz search results.
+  # - mb_search_limit: max number of extra MB search candidates to show.
+  prompt_show_urls: true
+  prompt_expand_mb_candidates: true
+  prompt_mb_search_limit: 6
+  # If true, interactive `scan`/`run` will automatically process deferred prompts after scanning completes.
+  # Set false if you want scans to finish without prompting; then run `audio-meta deferred` when ready.
+  process_deferred_prompts_at_end: true
   # Safety guard: if an AcoustID fingerprint match disagrees with existing tags (album/album_artist),
   # treat it as suspicious and defer the directory for manual confirmation.
   # - threshold is token-overlap ratio (0..1); higher is stricter.
