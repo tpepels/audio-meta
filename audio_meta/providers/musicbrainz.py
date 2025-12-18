@@ -7,9 +7,18 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 import difflib
 
-import acoustid
-import musicbrainzngs
-from mutagen import File as MutagenFile
+try:  # Optional at runtime; matching can still work without AcoustID.
+    import acoustid  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    acoustid = None
+try:
+    import musicbrainzngs  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    musicbrainzngs = None
+try:
+    from mutagen import File as MutagenFile  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    MutagenFile = None
 
 from ..config import ProviderSettings
 from ..heuristics import PathGuess, guess_metadata_from_path
@@ -198,11 +207,12 @@ class MusicBrainzClient:
         self.settings = settings
         self.cache = cache
         self.release_tracker = ReleaseTracker()
-        musicbrainzngs.set_useragent(
-            "audio-meta",
-            "0.1",
-            contact=settings.musicbrainz_useragent,
-        )
+        if musicbrainzngs is not None:
+            musicbrainzngs.set_useragent(
+                "audio-meta",
+                "0.1",
+                contact=settings.musicbrainz_useragent,
+            )
 
     def enrich(self, meta: TrackMetadata) -> Optional[LookupResult]:
         guess = guess_metadata_from_path(meta.path)
@@ -281,6 +291,8 @@ class MusicBrainzClient:
         dir_release_artist: Optional[str] = None,
         dir_release_score: float = 0.0,
     ) -> Optional[LookupResult]:
+        if acoustid is None:
+            return None
         tags = self._read_basic_tags(meta.path)
         album_hint = self._album_hint(meta, tags)
         try:
@@ -289,7 +301,7 @@ class MusicBrainzClient:
                 fingerprint,
                 duration,
             )
-        except acoustid.AcoustidError as exc:
+        except Exception as exc:
             logger.warning("AcoustID lookup failed for %s: %s", meta.path, exc)
             return None
         for score, recording_id, title, artist in self._iter_acoustid(acoustic_matches):
@@ -321,6 +333,8 @@ class MusicBrainzClient:
         dir_release_artist: Optional[str] = None,
         dir_release_score: float = 0.0,
     ) -> Optional[LookupResult]:
+        if musicbrainzngs is None:
+            return None
         artist = tags.get("artist")
         title = tags.get("title")
         if not artist or not title:
@@ -378,6 +392,8 @@ class MusicBrainzClient:
         dir_release_artist: Optional[str] = None,
         dir_release_score: float = 0.0,
     ) -> Optional[LookupResult]:
+        if musicbrainzngs is None:
+            return None
         if guess.confidence() < 0.4 or not guess.title:
             return None
         query: Dict[str, str] = {"recording": guess.title}
@@ -434,14 +450,18 @@ class MusicBrainzClient:
         return None
 
     def _fingerprint(self, meta: TrackMetadata) -> tuple[Optional[int], Optional[str]]:
+        if acoustid is None:
+            return None, None
         try:
             duration, fingerprint = acoustid.fingerprint_file(str(meta.path))
             return duration, fingerprint
-        except acoustid.FingerprintGenerationError as exc:
+        except Exception as exc:
             logger.error("Fingerprint failed for %s: %s", meta.path, exc)
             return None, None
 
     def _probe_duration(self, path: Path) -> Optional[int]:
+        if MutagenFile is None:
+            return None
         try:
             audio = MutagenFile(path)
         except Exception:
@@ -581,6 +601,8 @@ class MusicBrainzClient:
 
     def _fetch_recording(self, recording_id: str, path) -> Optional[dict]:
         try:
+            if musicbrainzngs is None:
+                return None
             if self.cache:
                 cached = self.cache.get_recording(recording_id)
                 if cached:
@@ -604,6 +626,8 @@ class MusicBrainzClient:
                 logger.debug("MusicBrainz cache hit for release %s", release_id)
                 return self._build_release_data(cached)
         try:
+            if musicbrainzngs is None:
+                return None
             release = musicbrainzngs.get_release_by_id(
                 release_id,
                 includes=["recordings", "artist-credits", "media"],
@@ -627,9 +651,34 @@ class MusicBrainzClient:
             for fmt in formats:
                 if fmt and fmt not in data.formats:
                     data.formats.append(fmt)
-            for track in medium.get("track-list", []):
+            track_list = medium.get("track-list", []) or []
+            raw_numbers = [t.get("number") for t in track_list]
+            parsed_numbers = [self._parse_track_number(v) for v in raw_numbers]
+            has_letters = any(isinstance(v, str) and re.search(r"[A-Za-z]", v) for v in raw_numbers)
+            resolved_numbers: list[Optional[int]] = []
+            if track_list:
+                if all(n is None for n in parsed_numbers):
+                    resolved_numbers = list(range(1, len(track_list) + 1))
+                elif any(n is None for n in parsed_numbers):
+                    used = {n for n in parsed_numbers if isinstance(n, int)}
+                    next_candidate = 1
+                    for n in parsed_numbers:
+                        if isinstance(n, int):
+                            resolved_numbers.append(n)
+                            continue
+                        while next_candidate in used:
+                            next_candidate += 1
+                        resolved_numbers.append(next_candidate)
+                        used.add(next_candidate)
+                        next_candidate += 1
+                elif has_letters and len(set(parsed_numbers)) != len(parsed_numbers):
+                    resolved_numbers = list(range(1, len(track_list) + 1))
+                else:
+                    resolved_numbers = parsed_numbers
+
+            for index, track in enumerate(track_list):
                 recording = track.get("recording", {})
-                number = self._parse_track_number(track.get("number"))
+                number = resolved_numbers[index] if index < len(resolved_numbers) else self._parse_track_number(track.get("number"))
                 length = track.get("length")
                 duration = int(length) // 1000 if length else None
                 data.add_track(
@@ -687,6 +736,8 @@ class MusicBrainzClient:
                 meta.album_artist = release.album_artist
 
     def _read_basic_tags(self, path) -> dict[str, Optional[str]]:
+        if MutagenFile is None:
+            return {}
         try:
             audio = MutagenFile(path, easy=True)
         except Exception as exc:  # pragma: no cover - tag parsing failures
@@ -714,7 +765,18 @@ class MusicBrainzClient:
     def _parse_track_number(value: Optional[str]) -> Optional[int]:
         if not value:
             return None
-        digits = "".join(ch for ch in value if ch.isdigit())
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned.isdigit():
+            return int(cleaned)
+        match = re.match(r"^\s*\d+\s*[-./]\s*(\d+)\s*$", cleaned)
+        if match:
+            return int(match.group(1))
+        match = re.match(r"^\s*([A-Za-z])\s*$", cleaned)
+        if match:
+            return ord(match.group(1).upper()) - ord("A") + 1
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
         return int(digits) if digits else None
 
     def _extract_release(
@@ -738,6 +800,8 @@ class MusicBrainzClient:
         album_hint: Optional[str],
         limit: int = 5,
     ) -> List[dict]:
+        if musicbrainzngs is None:
+            return []
         query: Dict[str, str] = {}
         if artist_hint:
             query["artist"] = artist_hint

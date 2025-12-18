@@ -251,7 +251,18 @@ class DiscogsClient:
     def _parse_track_number(self, position: Optional[str]) -> Optional[int]:
         if not position:
             return None
-        digits = "".join(ch for ch in position if ch.isdigit())
+        cleaned = position.strip()
+        if not cleaned:
+            return None
+        if cleaned.isdigit():
+            return int(cleaned)
+        match = re.match(r"^\s*\d+\s*[-./]\s*(\d+)\s*$", cleaned)
+        if match:
+            return int(match.group(1))
+        match = re.match(r"^\s*([A-Za-z])\s*$", cleaned)
+        if match:
+            return ord(match.group(1).upper()) - ord("A") + 1
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
         return int(digits) if digits else None
 
     def _parse_duration(self, value: Optional[str]) -> Optional[int]:

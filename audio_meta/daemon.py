@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -655,52 +656,330 @@ class AudioMetaDaemon:
         unmatched: list[PendingResult],
     ) -> None:
         provider, release_id = self._split_release_key(release_key)
-        if provider != "musicbrainz" or not release_id:
+        if not release_id:
             return
-        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-        if not release_data:
-            release_data = self.musicbrainz._fetch_release_tracks(release_id)
-            if release_data:
-                self.musicbrainz.release_tracker.releases[release_id] = release_data
-        if not release_data or not release_data.tracks:
-            return
+
+        debug_details = bool(getattr(self.settings.daemon, "debug_unmatched", False)) or logger.isEnabledFor(logging.DEBUG)
+
+        def mb_track_score_breakdown(
+            meta: TrackMetadata,
+            track,
+            *,
+            title: str,
+            title_norm: Optional[str],
+            track_number: Optional[int],
+            disc_number: Optional[int],
+        ) -> tuple[float, dict[str, float | int | str | None]]:
+            if meta.musicbrainz_track_id and track.recording_id and meta.musicbrainz_track_id == track.recording_id:
+                return 1.0, {"recording_id_match": 1.0}
+            score = 0.0
+            components: dict[str, float | int | str | None] = {}
+            if isinstance(track_number, int) and track.number:
+                diff = abs(track.number - track_number)
+                components["track_number_diff"] = diff
+                if diff == 0:
+                    score += 0.62
+                    components["track_number_score"] = 0.62
+                elif diff == 1:
+                    score += 0.28
+                    components["track_number_score"] = 0.28
+                elif diff == 2:
+                    score += 0.12
+                    components["track_number_score"] = 0.12
+            if isinstance(disc_number, int) and track.disc_number:
+                disc_score = 0.08 if disc_number == track.disc_number else -0.04
+                score += disc_score
+                components["disc_number_score"] = disc_score
+            ratio = 0.0
+            if title_norm and track.title:
+                ratio = title_similarity(title_norm, track.title) or 0.0
+                score += 0.25 * ratio
+                components["title_similarity"] = ratio
+                components["title_score"] = 0.25 * ratio
+                if ratio >= 0.98:
+                    score += 0.45
+                    components["title_exact_bonus"] = 0.45
+            elif title and track.title:
+                ratio = title_similarity(title, track.title) or 0.0
+                score += 0.2 * ratio
+                components["title_similarity"] = ratio
+                components["title_score"] = 0.2 * ratio
+            dur_ratio = duration_similarity(meta.duration_seconds, track.duration_seconds)
+            if dur_ratio is not None:
+                score += 0.05 * dur_ratio
+                components["duration_similarity"] = float(dur_ratio)
+                components["duration_score"] = 0.05 * float(dur_ratio)
+            return max(0.0, min(1.0, score)), components
+
+        def dg_track_score_breakdown(
+            meta: TrackMetadata,
+            track: dict,
+            *,
+            title_norm: str,
+            track_number: Optional[int],
+        ) -> tuple[float, dict[str, float | int | str | None]]:
+            score = 0.0
+            components: dict[str, float | int | str | None] = {}
+            position = track.get("position")
+            pos_num = self.discogs._parse_track_number(position) if self.discogs and isinstance(position, str) else None
+            if isinstance(track_number, int) and isinstance(pos_num, int):
+                diff = abs(pos_num - track_number)
+                components["track_number_diff"] = diff
+                if diff == 0:
+                    score += 0.6
+                    components["track_number_score"] = 0.6
+                elif diff == 1:
+                    score += 0.25
+                    components["track_number_score"] = 0.25
+                elif diff == 2:
+                    score += 0.1
+                    components["track_number_score"] = 0.1
+            ratio = title_similarity(title_norm, track.get("title")) or 0.0
+            if ratio:
+                score += 0.3 * ratio
+                components["title_similarity"] = ratio
+                components["title_score"] = 0.3 * ratio
+            dur = parse_discogs_duration(track.get("duration"))
+            dur_ratio = duration_similarity(meta.duration_seconds, dur)
+            if dur_ratio is not None:
+                score += 0.1 * float(dur_ratio)
+                components["duration_similarity"] = float(dur_ratio)
+                components["duration_score"] = 0.1 * float(dur_ratio)
+            return max(0.0, min(1.0, score)), components
+
         display = self._display_path(directory)
-        for pending in unmatched[:5]:
-            meta = pending.meta
-            guess = guess_metadata_from_path(meta.path)
-            title = meta.title or guess.title or meta.path.stem
-            title_norm = normalize_title_for_match(title) or title
-            track_number = meta.extra.get("TRACKNUMBER")
-            disc_number = meta.extra.get("DISCNUMBER")
-            candidates: list[tuple[float, str]] = []
-            for track in release_data.tracks:
-                score = 0.0
-                if meta.musicbrainz_track_id and track.recording_id and meta.musicbrainz_track_id == track.recording_id:
-                    score = 1.0
-                else:
-                    if isinstance(track_number, int) and track.number:
-                        diff = abs(track.number - track_number)
-                        if diff == 0:
-                            score += 0.62
-                        elif diff == 1:
-                            score += 0.28
-                    if isinstance(disc_number, int) and track.disc_number:
-                        score += 0.08 if disc_number == track.disc_number else -0.04
-                    ratio = title_similarity(title_norm, track.title) or 0.0
-                    score += 0.25 * ratio
-                    dur_ratio = duration_similarity(meta.duration_seconds, track.duration_seconds)
-                    if dur_ratio is not None:
-                        score += 0.05 * dur_ratio
-                label = f"D{track.disc_number or '?'}:{track.number or '?'} {track.title or '<untitled>'}"
-                candidates.append((score, label))
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            top = ", ".join(f"{label} ({score:.2f})" for score, label in candidates[:3])
-            logger.info(
-                "Unmatched track in %s: %s -> top candidates: %s",
-                display,
-                meta.path.name,
-                top,
-            )
+
+        if provider == "musicbrainz":
+            release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+            if not release_data:
+                release_data = self.musicbrainz._fetch_release_tracks(release_id)
+                if release_data:
+                    self.musicbrainz.release_tracker.releases[release_id] = release_data
+            if not release_data or not release_data.tracks:
+                return
+
+            if debug_details:
+                payload = {
+                    "directory": str(directory),
+                    "provider": provider,
+                    "release_id": release_id,
+                    "release_title": release_data.album_title,
+                    "release_artist": release_data.album_artist,
+                    "release_date": release_data.release_date,
+                    "release_formats": list(release_data.formats),
+                    "release_disc_count": release_data.disc_count,
+                    "release_tracks": [
+                        {
+                            "disc_number": t.disc_number,
+                            "track_number": t.number,
+                            "title": t.title,
+                            "recording_id": t.recording_id,
+                            "duration_seconds": t.duration_seconds,
+                        }
+                        for t in release_data.tracks
+                    ],
+                    "unmatched": [],
+                }
+                for pending in unmatched[:25]:
+                    meta = pending.meta
+                    guess = guess_metadata_from_path(meta.path)
+                    title = meta.title or guess.title or meta.path.stem
+                    title_norm = normalize_title_for_match(title)
+                    track_number = meta.extra.get("TRACKNUMBER")
+                    disc_number = meta.extra.get("DISCNUMBER")
+                    if not isinstance(track_number, int):
+                        track_number = guess.track_number
+                    if not isinstance(disc_number, int):
+                        disc_number = None
+                    candidates: list[dict] = []
+                    for track in release_data.tracks:
+                        score, components = mb_track_score_breakdown(
+                            meta,
+                            track,
+                            title=title,
+                            title_norm=title_norm,
+                            track_number=track_number if isinstance(track_number, int) else None,
+                            disc_number=disc_number if isinstance(disc_number, int) else None,
+                        )
+                        candidates.append(
+                            {
+                                "disc_number": track.disc_number,
+                                "track_number": track.number,
+                                "title": track.title,
+                                "recording_id": track.recording_id,
+                                "score": score,
+                                "components": components,
+                            }
+                        )
+                    candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+                    payload["unmatched"].append(
+                        {
+                            "file": str(meta.path),
+                            "filename": meta.path.name,
+                            "existing_tags": dict(pending.existing_tags or {}),
+                            "meta": {
+                                "title": meta.title,
+                                "artist": meta.artist,
+                                "album": meta.album,
+                                "album_artist": meta.album_artist,
+                                "duration_seconds": meta.duration_seconds,
+                                "musicbrainz_track_id": meta.musicbrainz_track_id,
+                                "musicbrainz_release_id": meta.musicbrainz_release_id,
+                                "TRACKNUMBER": meta.extra.get("TRACKNUMBER"),
+                                "DISCNUMBER": meta.extra.get("DISCNUMBER"),
+                            },
+                            "guess": {
+                                "title": guess.title,
+                                "artist": guess.artist,
+                                "album": guess.album,
+                                "track_number": guess.track_number,
+                            },
+                            "top_candidates": candidates[:5],
+                        }
+                    )
+                logger.debug("Unmatched diagnostics (musicbrainz):\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
+
+            for pending in unmatched[:5]:
+                meta = pending.meta
+                guess = guess_metadata_from_path(meta.path)
+                title = meta.title or guess.title or meta.path.stem
+                title_norm = normalize_title_for_match(title)
+                track_number = meta.extra.get("TRACKNUMBER")
+                disc_number = meta.extra.get("DISCNUMBER")
+                if not isinstance(track_number, int):
+                    track_number = guess.track_number
+                if not isinstance(disc_number, int):
+                    disc_number = None
+                candidates: list[tuple[float, str]] = []
+                for track in release_data.tracks:
+                    score, _ = mb_track_score_breakdown(
+                        meta,
+                        track,
+                        title=title,
+                        title_norm=title_norm,
+                        track_number=track_number if isinstance(track_number, int) else None,
+                        disc_number=disc_number if isinstance(disc_number, int) else None,
+                    )
+                    label = f"D{track.disc_number or '?'}:{track.number or '?'} {track.title or '<untitled>'}"
+                    candidates.append((score, label))
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                top = ", ".join(f"{label} ({score:.2f})" for score, label in candidates[:3])
+                logger.info(
+                    "Unmatched track in %s: %s -> top candidates: %s",
+                    display,
+                    meta.path.name,
+                    top,
+                )
+            return
+
+        if provider == "discogs":
+            if not self.discogs:
+                return
+            try:
+                details = self.discogs.get_release(int(release_id))
+            except Exception:
+                details = None
+            if not details:
+                return
+            tracklist = details.get("tracklist") or []
+            tracks = [t for t in tracklist if t.get("type_", "track") in (None, "", "track")]
+            if not tracks:
+                return
+
+            if debug_details:
+                payload = {
+                    "directory": str(directory),
+                    "provider": provider,
+                    "release_id": release_id,
+                    "release_title": details.get("title"),
+                    "release_year": details.get("year"),
+                    "release_formats": details.get("formats"),
+                    "release_tracks": [
+                        {
+                            "position": t.get("position"),
+                            "title": t.get("title"),
+                            "duration": t.get("duration"),
+                        }
+                        for t in tracks
+                    ],
+                    "unmatched": [],
+                }
+                for pending in unmatched[:25]:
+                    meta = pending.meta
+                    guess = guess_metadata_from_path(meta.path)
+                    title = meta.title or guess.title or meta.path.stem
+                    title_norm = normalize_title_for_match(title) or title
+                    track_number = meta.extra.get("TRACKNUMBER")
+                    if not isinstance(track_number, int):
+                        track_number = guess.track_number
+                    candidates: list[dict] = []
+                    for track in tracks:
+                        score, components = dg_track_score_breakdown(
+                            meta,
+                            track,
+                            title_norm=title_norm,
+                            track_number=track_number if isinstance(track_number, int) else None,
+                        )
+                        candidates.append(
+                            {
+                                "position": track.get("position"),
+                                "title": track.get("title"),
+                                "score": score,
+                                "components": components,
+                            }
+                        )
+                    candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+                    payload["unmatched"].append(
+                        {
+                            "file": str(meta.path),
+                            "filename": meta.path.name,
+                            "existing_tags": dict(pending.existing_tags or {}),
+                            "meta": {
+                                "title": meta.title,
+                                "artist": meta.artist,
+                                "album": meta.album,
+                                "album_artist": meta.album_artist,
+                                "duration_seconds": meta.duration_seconds,
+                                "TRACKNUMBER": meta.extra.get("TRACKNUMBER"),
+                            },
+                            "guess": {
+                                "title": guess.title,
+                                "artist": guess.artist,
+                                "album": guess.album,
+                                "track_number": guess.track_number,
+                            },
+                            "top_candidates": candidates[:5],
+                        }
+                    )
+                logger.debug("Unmatched diagnostics (discogs):\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
+
+            for pending in unmatched[:5]:
+                meta = pending.meta
+                guess = guess_metadata_from_path(meta.path)
+                title = meta.title or guess.title or meta.path.stem
+                title_norm = normalize_title_for_match(title) or title
+                track_number = meta.extra.get("TRACKNUMBER")
+                if not isinstance(track_number, int):
+                    track_number = guess.track_number
+                candidates: list[tuple[float, str]] = []
+                for track in tracks:
+                    score, _ = dg_track_score_breakdown(
+                        meta,
+                        track,
+                        title_norm=title_norm,
+                        track_number=track_number if isinstance(track_number, int) else None,
+                    )
+                    label = f"{track.get('position') or '?'} {track.get('title') or '<untitled>'}"
+                    candidates.append((score, label))
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                top = ", ".join(f"{label} ({score:.2f})" for score, label in candidates[:3])
+                logger.info(
+                    "Unmatched track in %s: %s -> top candidates: %s",
+                    display,
+                    meta.path.name,
+                    top,
+                )
+            return
 
     @staticmethod
     def _safe_stat(path: Path):
@@ -985,10 +1264,7 @@ class AudioMetaDaemon:
             for track in tracks:
                 score = 0.0
                 position = track.get("position")
-                pos_num = None
-                if isinstance(position, str):
-                    digits = "".join(ch for ch in position if ch.isdigit())
-                    pos_num = int(digits) if digits else None
+                pos_num = self.discogs._parse_track_number(position) if isinstance(position, str) else None
                 if isinstance(track_number, int) and pos_num:
                     diff = abs(pos_num - track_number)
                     if diff == 0:
@@ -1019,9 +1295,9 @@ class AudioMetaDaemon:
             self.discogs.apply_release_details_matched(pending.meta, release_details, track, allow_overwrite=True)
             position = track.get("position")
             if "TRACKNUMBER" not in pending.meta.extra and isinstance(position, str):
-                digits = "".join(ch for ch in position if ch.isdigit())
-                if digits.isdigit():
-                    pending.meta.extra["TRACKNUMBER"] = int(digits)
+                pos_num = self.discogs._parse_track_number(position)
+                if isinstance(pos_num, int):
+                    pending.meta.extra["TRACKNUMBER"] = pos_num
             pending.meta.match_confidence = max(pending.meta.match_confidence or 0.0, 0.35 + score * 0.3)
             pending.result = LookupResult(pending.meta, score=max(pending.result.score if pending.result else 0.0, 0.35 + score * 0.3))
             pending.matched = True
@@ -1065,6 +1341,8 @@ class AudioMetaDaemon:
                 meta = pending.meta
                 guess = guess_metadata_from_path(meta.path)
                 track_number = meta.extra.get("TRACKNUMBER")
+                if not isinstance(track_number, int):
+                    track_number = guess.track_number
                 disc_number = meta.extra.get("DISCNUMBER")
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title)
@@ -1090,6 +1368,8 @@ class AudioMetaDaemon:
                     if title_norm and track.title:
                         ratio = title_similarity(title_norm, track.title) or 0.0
                         score += 0.25 * ratio
+                        if ratio >= 0.98:
+                            score += 0.45
                     elif title and track.title:
                         ratio = title_similarity(title, track.title) or 0.0
                         score += 0.2 * ratio
@@ -1116,6 +1396,10 @@ class AudioMetaDaemon:
                     to_assign[pending_index].matched = True
                     applied = True
                     release_data.mark_claimed(track.recording_id)
+                    if "TRACKNUMBER" not in to_assign[pending_index].meta.extra and isinstance(track.number, int):
+                        to_assign[pending_index].meta.extra["TRACKNUMBER"] = track.number
+                    if "DISCNUMBER" not in to_assign[pending_index].meta.extra and isinstance(track.disc_number, int):
+                        to_assign[pending_index].meta.extra["DISCNUMBER"] = track.disc_number
         if applied:
             artist = release_data.album_artist if release_data else None
             album = release_data.album_title if release_data else None
