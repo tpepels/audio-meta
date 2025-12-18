@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 def hungarian_min_cost(cost: List[List[float]]) -> List[Optional[int]]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .config import ClassicalSettings
 from .models import TrackMetadata

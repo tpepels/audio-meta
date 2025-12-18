@@ -20,10 +20,18 @@ def path_based_hints(directory: Path) -> tuple[Optional[str], Optional[str]]:
         if current.parent == current:
             break
         current = current.parent
-    album = next((name for name in names if name and not looks_like_disc_folder(name)), names[0] if names else None)
+    album = None
+    album_index = None
+    for idx, name in enumerate(names):
+        if name and not looks_like_disc_folder(name):
+            album = name
+            album_index = idx
+            break
+    if album is None:
+        album = names[0] if names else None
     artist = None
-    if len(names) > 1:
-        for name in names[1:]:
+    if album_index is not None:
+        for name in names[album_index + 1 :]:
             if name and not looks_like_disc_folder(name):
                 artist = name
                 break
@@ -71,4 +79,3 @@ def tokenize(value: Optional[str]) -> list[str]:
     cleaned = cleaned.lower()
     cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
     return [token for token in cleaned.split() if token]
-

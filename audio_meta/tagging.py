@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
-from mutagen import File
 from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TALB, TPE1, TPE2, TCON, TCOM, COMM, TRCK, TPOS
 from mutagen.mp4 import MP4
 from mutagen.flac import FLAC
 
-from .models import TrackMetadata, ProcessingError
+from .models import TrackMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +83,7 @@ class TagWriter:
                     "movement": self._id3_text(tags, "MVNM"),
                     "tracknumber": self._id3_text(tags, "TRCK"),
                     "discnumber": self._id3_text(tags, "TPOS"),
+                    "date": self._id3_text(tags, "TDRC") or self._id3_text(tags, "TYER"),
                 }
             if ext == ".flac":
                 audio = FLAC(meta.path)
@@ -99,6 +98,7 @@ class TagWriter:
                     "movement": audio.get("MOVEMENT", [None])[0],
                     "tracknumber": audio.get("TRACKNUMBER", [None])[0],
                     "discnumber": audio.get("DISCNUMBER", [None])[0],
+                    "date": audio.get("DATE", [None])[0] or audio.get("YEAR", [None])[0],
                 }
             if ext == ".m4a":
                 audio = MP4(meta.path)
@@ -125,6 +125,7 @@ class TagWriter:
                     "movement": self._mp4_text(audio, "----:com.apple.iTunes:MOVEMENT"),
                     "tracknumber": track_number,
                     "discnumber": disc_number,
+                    "date": self._mp4_text(audio, "\xa9day"),
                 }
         except Exception as exc:  # pragma: no cover - depends on local files
             logger.debug("Failed to read tags for %s: %s", meta.path, exc)

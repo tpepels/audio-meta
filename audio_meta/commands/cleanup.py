@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 

@@ -21,6 +21,20 @@ class _FakeDaemon:
         self._release_home_counts: dict[str, int] = {}
 
     @staticmethod
+    def _parse_year(value: str | None) -> int | None:
+        if not value:
+            return None
+        import re
+
+        match = re.search(r"(19|20)\d{2}", value)
+        if not match:
+            return None
+        try:
+            return int(match.group(0))
+        except ValueError:
+            return None
+
+    @staticmethod
     def _release_key(provider: str, release_id: str) -> str:
         return f"{provider}:{release_id}"
 
@@ -193,6 +207,111 @@ class TestReleaseSelectionEdgeCases(unittest.TestCase):
             )
         self.assertTrue(decision.should_abort)
         self.assertTrue(any("Low coverage" in reason for _, reason in self.daemon.recorded_skips))
+
+    def test_prunes_single_track_releases_when_album_like_exists(self) -> None:
+        scores = {"musicbrainz:single": 0.95, "musicbrainz:album": 0.8}
+        examples = {
+            "musicbrainz:single": self._example("musicbrainz", "Song", "Artist", 1),
+            "musicbrainz:album": self._example("musicbrainz", "Album", "Artist", 10),
+        }
+        decision = decide_release(
+            self.daemon,
+            self.directory,
+            file_count=10,
+            is_singleton=False,
+            dir_track_count=10,
+            dir_year=2000,
+            pending_results=[],
+            release_scores=dict(scores),
+            release_examples=examples,
+            discogs_details={},
+            forced_provider=None,
+            forced_release_id=None,
+            forced_release_score=0.0,
+            force_prompt=False,
+            release_summary_printed=False,
+        )
+        self.assertEqual(decision.best_release_id, "musicbrainz:album")
+
+    def test_keeps_single_track_release_when_no_album_like_exists(self) -> None:
+        scores = {"musicbrainz:single": 0.95}
+        examples = {"musicbrainz:single": self._example("musicbrainz", "Song", "Artist", 1)}
+        decision = decide_release(
+            self.daemon,
+            self.directory,
+            file_count=3,
+            is_singleton=False,
+            dir_track_count=3,
+            dir_year=2000,
+            pending_results=[],
+            release_scores=dict(scores),
+            release_examples=examples,
+            discogs_details={},
+            forced_provider=None,
+            forced_release_id=None,
+            forced_release_score=0.0,
+            force_prompt=False,
+            release_summary_printed=False,
+        )
+        self.assertEqual(decision.best_release_id, "musicbrainz:single")
+
+    def test_infers_dir_year_from_existing_tags(self) -> None:
+        from audio_meta.daemon_types import PendingResult
+        from audio_meta.models import TrackMetadata
+        from audio_meta.release_selection import _infer_dir_year_from_pending_results
+
+        pending_results = [
+            PendingResult(meta=TrackMetadata(path=Path("/tmp/a.mp3")), result=None, matched=False, existing_tags={"date": "2002-01-01"}),
+            PendingResult(meta=TrackMetadata(path=Path("/tmp/b.mp3")), result=None, matched=False, existing_tags={"date": "2002"}),
+            PendingResult(meta=TrackMetadata(path=Path("/tmp/c.mp3")), result=None, matched=False, existing_tags={"date": "2014"}),
+        ]
+        self.assertEqual(_infer_dir_year_from_pending_results(self.daemon, pending_results), 2002)
+
+    def test_dir_year_from_tags_is_passed_to_adjust_release_scores(self) -> None:
+        from audio_meta.daemon_types import PendingResult
+        from audio_meta.models import TrackMetadata
+
+        captured: dict[str, int | None] = {"dir_year": None}
+
+        class _DaemonCapturingYear(_FakeDaemon):
+            def _adjust_release_scores(self, scores, _examples, _dir_track_count, dir_year, *_args, **_kwargs):
+                captured["dir_year"] = dir_year
+                return scores, {}
+
+        daemon = _DaemonCapturingYear()
+        pending_results = [
+            PendingResult(
+                meta=TrackMetadata(path=Path("/tmp/a.mp3")),
+                result=None,
+                matched=False,
+                existing_tags={"date": "2002-01-01"},
+            )
+            ,
+            PendingResult(
+                meta=TrackMetadata(path=Path("/tmp/b.mp3")),
+                result=None,
+                matched=False,
+                existing_tags={"date": "2002"},
+            ),
+        ]
+        decide_release(
+            daemon,
+            self.directory,
+            file_count=2,
+            is_singleton=False,
+            dir_track_count=2,
+            dir_year=None,
+            pending_results=pending_results,
+            release_scores={"musicbrainz:mb1": 0.9},
+            release_examples={"musicbrainz:mb1": self._example("musicbrainz", "A", "Artist", 2)},
+            discogs_details={},
+            forced_provider=None,
+            forced_release_id=None,
+            forced_release_score=0.0,
+            force_prompt=False,
+            release_summary_printed=False,
+        )
+        self.assertEqual(captured["dir_year"], 2002)
 
 
 class TestAutoPickBestFitRelease(unittest.TestCase):

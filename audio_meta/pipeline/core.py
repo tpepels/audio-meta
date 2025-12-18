@@ -6,25 +6,15 @@ from typing import Any, Iterable, Optional
 
 from .contexts import DirectoryContext, PlanApplyContext, TrackEnrichmentContext, TrackSignalContext, TrackSkipContext
 from .protocols import (
-    CandidateSourcePlugin,
     CacheMaintenancePlugin,
-    DirectoryAnalyzerPlugin,
     DirectoryDiagnosticsPlugin,
     DirectoryFinalizePlugin,
-    DirectoryInitializerPlugin,
-    DirectorySkipPolicyPlugin,
     ReleaseFinalizePlugin,
-    PlanApplyPlugin,
-    ReleaseDecisionPlugin,
     PlannerPlugin,
     PlanTransformPlugin,
     ScanDiagnosticsPlugin,
-    SignalExtractorPlugin,
     SingletonHandlerPlugin,
     TrackSkipPolicyPlugin,
-    TrackAssignmentPlugin,
-    TrackEnricherPlugin,
-    UnmatchedPolicyPlugin,
 )
 from .types import ReleaseFinalizeOutcome, UnmatchedDecision
 from .plugins.candidates_discogs import DiscogsCandidateSourcePlugin

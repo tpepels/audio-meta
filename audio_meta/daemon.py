@@ -4,13 +4,12 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import sys
 from pathlib import Path
 from threading import Lock
-from typing import Iterable, Optional
+from typing import Optional
 
 from watchdog.observers import Observer
 
@@ -32,7 +31,7 @@ from .config import Settings
 from .models import TrackMetadata
 from .organizer import Organizer
 from .providers.discogs import DiscogsClient
-from .providers.musicbrainz import LookupResult, MusicBrainzClient, ReleaseMatch
+from .providers.musicbrainz import LookupResult, MusicBrainzClient, ReleaseData, ReleaseMatch
 from .scanner import DirectoryBatch, LibraryScanner
 from .tagging import TagWriter
 from .cache import MetadataCache
@@ -186,7 +185,6 @@ class AudioMetaDaemon:
         discogs_details: dict[str, dict] = {}
         self.pipeline.analyze_directory(dir_ctx)
         dir_track_count = dir_ctx.dir_track_count
-        dir_year = dir_ctx.dir_year
         dir_ctx.pending_results = pending_results
         dir_ctx.release_scores = release_scores
         dir_ctx.release_examples = release_examples
@@ -630,7 +628,7 @@ class AudioMetaDaemon:
             return entries or None
         return None
 
-    def _match_pending_to_release(self, meta: TrackMetadata, release: "ReleaseData") -> Optional[float]:
+    def _match_pending_to_release(self, meta: TrackMetadata, release: ReleaseData) -> Optional[float]:
         title = meta.title or guess_metadata_from_path(meta.path).title
         duration = meta.duration_seconds
         if duration is None:
@@ -1649,21 +1647,37 @@ class AudioMetaDaemon:
         disc_count: Optional[int],
         pending_results: list[PendingResult],
     ) -> None:
+        year: Optional[int] = None
+        if provider == "musicbrainz":
+            release_data = self.musicbrainz.release_tracker.releases.get(release_id)
+            if release_data:
+                album = album or release_data.album_title
+                artist = artist or release_data.album_artist
+                if track_count is None and release_data.tracks:
+                    track_count = len(release_data.tracks)
+                disc_count = disc_count or release_data.disc_count
+                year = self._parse_year(getattr(release_data, "date", None))
+
         before_album = None
         before_artist = None
         if pending_results:
             before_album = pending_results[0].meta.album
             before_artist = pending_results[0].meta.album_artist or pending_results[0].meta.artist
         display = self._display_path(directory)
+        provider_label = {"musicbrainz": "MusicBrainz", "discogs": "Discogs"}.get(provider, provider)
+        stats_parts = [f"tracks={track_count or '?'}", f"discs={disc_count or '?'}"]
+        if year:
+            stats_parts.insert(0, f"year={year}")
+        stats = " ".join(stats_parts)
         logger.info(
-            "Applying %s release %s to %s: %s – %s (tracks=%s discs=%s)",
-            provider.upper(),
-            release_id,
+            "Applying %s match to %s: %s – %s (%s) [%s:%s]",
+            provider_label,
             display,
             album or "unknown album",
             artist or "unknown artist",
-            track_count or "?",
-            disc_count or "?",
+            stats,
+            provider,
+            release_id,
         )
         if before_album or before_artist:
             logger.debug(

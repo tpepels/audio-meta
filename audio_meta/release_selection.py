@@ -45,15 +45,25 @@ def decide_release(
     release_summary_printed: bool,
 ) -> ReleaseDecision:
     discogs_release_details = None
+    effective_dir_year = dir_year or _infer_dir_year_from_pending_results(daemon, pending_results)
     release_scores, coverage_map = daemon._adjust_release_scores(
         release_scores,
         release_examples,
         dir_track_count,
-        dir_year,
+        effective_dir_year,
         pending_results,
         directory,
         discogs_details,
     )
+
+    release_scores, coverage_map = _prune_obviously_wrong_releases(
+        release_scores,
+        coverage_map,
+        release_examples,
+        dir_track_count=dir_track_count,
+        is_singleton=is_singleton,
+    )
+
     best_release_id = None
     best_score = 0.0
     for rid, score in release_scores.items():
@@ -144,7 +154,7 @@ def decide_release(
                 release_examples,
                 sample_meta,
                 dir_track_count,
-                dir_year,
+                effective_dir_year,
                 discogs_details,
             )
             if selection is None:
@@ -214,7 +224,7 @@ def decide_release(
                 release_examples,
                 sample_meta,
                 dir_track_count,
-                dir_year,
+                effective_dir_year,
                 discogs_details,
             )
             if selection is None:
@@ -326,7 +336,7 @@ def decide_release(
                     for rid, score in ambiguous_candidates
                 ],
                 dir_track_count,
-                dir_year,
+                effective_dir_year,
             )
             daemon._record_skip(directory, "Ambiguous release matches in non-interactive mode")
             return ReleaseDecision(
@@ -354,6 +364,82 @@ def decide_release(
         release_summary_printed=release_summary_printed,
         should_abort=False,
     )
+
+
+def _prune_obviously_wrong_releases(
+    release_scores: dict[str, float],
+    coverage_map: dict[str, float],
+    release_examples: dict[str, ReleaseExample],
+    *,
+    dir_track_count: int,
+    is_singleton: bool,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """
+    Drop "single track" releases when the directory clearly looks like an album.
+
+    Track-level matching (AcoustID/recording search) can attach tracks to single/compilation
+    releases; if we let those dominate directory-level selection, we can end up applying a
+    "release" that only contains one track.
+    """
+    if is_singleton or dir_track_count <= 1 or not release_scores:
+        return release_scores, coverage_map
+
+    totals: dict[str, int] = {}
+    for key in release_scores.keys():
+        example = release_examples.get(key)
+        if example and isinstance(example.track_total, int) and example.track_total > 0:
+            totals[key] = int(example.track_total)
+
+    if not totals:
+        return release_scores, coverage_map
+
+    has_album_like = any(total >= 3 for total in totals.values())
+    if not has_album_like:
+        return release_scores, coverage_map
+
+    def should_drop(key: str) -> bool:
+        total = totals.get(key)
+        if total is None:
+            return False
+        ratio = min(dir_track_count, total) / max(dir_track_count, total) if dir_track_count and total else 0.0
+        if total == 1 and dir_track_count >= 3:
+            return True
+        if total == 2 and dir_track_count >= 4 and ratio <= 0.6:
+            return True
+        if total <= 2 and ratio <= 0.4:
+            return True
+        return False
+
+    kept_scores = {k: v for k, v in release_scores.items() if not should_drop(k)}
+    if kept_scores:
+        kept_coverage = {k: v for k, v in coverage_map.items() if k in kept_scores}
+        return kept_scores, kept_coverage
+    return release_scores, coverage_map
+
+
+def _infer_dir_year_from_pending_results(daemon: "AudioMetaDaemon", pending_results: list[PendingResult]) -> Optional[int]:
+    years: list[int] = []
+    for pending in pending_results:
+        tags = pending.existing_tags
+        if not tags:
+            continue
+        for key in ("date", "originaldate", "year"):
+            value = tags.get(key)
+            year = daemon._parse_year(value) if value else None
+            if year:
+                years.append(int(year))
+                break
+    if not years:
+        return None
+    filtered = [y for y in years if 1600 <= y <= 2100]
+    years = filtered or years
+    counts: dict[int, int] = {}
+    for year in years:
+        counts[year] = counts.get(year, 0) + 1
+    best_year = max(counts.items(), key=lambda kv: kv[1])[0]
+    if counts[best_year] < max(2, len(years) // 2):
+        return None
+    return best_year
 
 
 def _auto_pick_best_fit_release(

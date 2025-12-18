@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..config import ProviderSettings
-from ..heuristics import PathGuess, guess_metadata_from_path
+from ..heuristics import guess_metadata_from_path
 from ..models import TrackMetadata
 from .musicbrainz import LookupResult
 from ..cache import MetadataCache
@@ -130,7 +130,6 @@ class DiscogsClient:
     def apply_release_details(self, meta: TrackMetadata, release: dict, allow_overwrite: bool = True) -> None:
         guess = guess_metadata_from_path(meta.path)
         tags = self._read_basic_tags(meta.path)
-        artist = tags.get("artist") or guess.artist
         title = tags.get("title") or guess.title or meta.title
         extra_number = meta.extra.get("TRACKNUMBER")
         if isinstance(extra_number, int):

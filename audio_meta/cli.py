@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .app import AudioMetaApp
 from .cache import MetadataCache
@@ -12,6 +11,7 @@ from .commands import audit_events as cmd_audit_events
 from .commands import audit_run as cmd_audit_run
 from .commands import cleanup as cmd_cleanup
 from .commands import doctor as cmd_doctor
+from .commands import export_testcase as cmd_export_testcase
 from .commands import rollback as cmd_rollback
 from .commands import singletons as cmd_singletons
 from .config import Settings, find_config
@@ -143,6 +143,17 @@ def main() -> None:
         action="store_true",
         help="Also validate providers with network calls",
     )
+    export_parser = subparsers.add_parser(
+        "export-testcase",
+        help="Export a deterministic testcase JSON for release selection/scoring",
+    )
+    export_parser.add_argument("directory", type=Path, help="Directory (or disc subfolder) to export")
+    export_parser.add_argument("--out", type=Path, default=Path("release_selection_case.json"))
+    export_parser.add_argument(
+        "--expected-release",
+        default=None,
+        help="Optional expected release key (e.g. musicbrainz:<id> or discogs:<id>)",
+    )
 
     args = parser.parse_args()
     config_path = find_config(args.config)
@@ -185,7 +196,7 @@ def main() -> None:
         finally:
             cache.close()
         return
-    requires_providers = args.command in {"scan", "daemon", "run"}
+    requires_providers = args.command in {"scan", "daemon", "run", "export-testcase"}
     if requires_providers:
         validate_providers(settings.providers)
     if args.clear_move_cache:
@@ -194,10 +205,10 @@ def main() -> None:
         cache.close()
     app: AudioMetaApp | None = None
     daemon: AudioMetaDaemon | None = None
-    uses_app = args.command in {"scan", "daemon", "run", "audit", "audit-events", "singletons", "doctor"}
+    uses_app = args.command in {"scan", "daemon", "run", "audit", "audit-events", "singletons", "doctor", "export-testcase"}
     if uses_app:
         app = AudioMetaApp.create(settings)
-    if args.command in {"scan", "daemon", "run"} and app:
+    if args.command in {"scan", "daemon", "run", "export-testcase"} and app:
         daemon = app.get_daemon(
             dry_run_output=args.dry_run_output,
             interactive=(args.command in {"scan", "run"}),
@@ -233,6 +244,15 @@ def main() -> None:
                     print(line)
                 if not report.ok:
                     raise SystemExit(1)
+            case "export-testcase":
+                if not daemon:
+                    raise SystemExit("Daemon unavailable")
+                cmd_export_testcase.run(
+                    daemon,
+                    directory=getattr(args, "directory"),
+                    out=getattr(args, "out"),
+                    expected_release_key=getattr(args, "expected_release", None),
+                )
             case _:
                 parser.error("Unknown command")
     finally:

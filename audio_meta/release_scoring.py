@@ -127,7 +127,7 @@ def _tag_overlap_bonus(
         return 0.0
     bonus = 0.0
     first_meta = pending_results[0].meta if pending_results else None
-    tag_artist, tag_album = _aggregated_tag_hints(pending_results)
+    tag_artist, tag_album, tag_composer, tag_work = _aggregated_tag_hints(pending_results)
     release_artist = example.artist or None
     release_album = example.title or None
     primary_artist = tag_artist or (first_meta.album_artist or first_meta.artist if first_meta else None)
@@ -138,6 +138,10 @@ def _tag_overlap_bonus(
     if primary_album:
         weight = 1.2 if tag_album else 0.8
         bonus += _weighted_overlap(daemon._token_overlap_ratio(primary_album, release_album), weight)
+    if tag_composer:
+        bonus += _positive_weighted_overlap(daemon._token_overlap_ratio(tag_composer, release_artist), 0.9)
+    if tag_work:
+        bonus += _positive_weighted_overlap(daemon._token_overlap_ratio(tag_work, release_album), 0.8)
     hint_artist, hint_album = daemon._path_based_hints(directory)
     bonus += _weighted_overlap(daemon._token_overlap_ratio(hint_artist, release_artist), 0.5)
     bonus += _weighted_overlap(daemon._token_overlap_ratio(hint_album, release_album), 0.5)
@@ -162,9 +166,27 @@ def _weighted_overlap(ratio: Optional[float], weight: float) -> float:
     return _overlap_delta(ratio) * weight
 
 
-def _aggregated_tag_hints(pending_results: list[PendingResult]) -> tuple[Optional[str], Optional[str]]:
+def _positive_overlap_delta(ratio: Optional[float]) -> float:
+    if ratio is None:
+        return 0.0
+    if ratio >= 0.75:
+        return 0.02
+    if ratio >= 0.6:
+        return 0.01
+    return 0.0
+
+
+def _positive_weighted_overlap(ratio: Optional[float], weight: float) -> float:
+    if weight <= 0:
+        return 0.0
+    return _positive_overlap_delta(ratio) * weight
+
+
+def _aggregated_tag_hints(pending_results: list[PendingResult]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     artist_values: list[str] = []
     album_values: list[str] = []
+    composer_values: list[str] = []
+    work_values: list[str] = []
     for pending in pending_results:
         tags = pending.existing_tags
         if not tags:
@@ -176,9 +198,17 @@ def _aggregated_tag_hints(pending_results: list[PendingResult]) -> tuple[Optiona
         album_candidate = tags.get("album")
         if album_candidate:
             album_values.append(album_candidate)
-    artist = _dominant_value(artist_values)
-    album = _dominant_value(album_values)
-    return artist, album
+        composer_candidate = tags.get("composer")
+        if composer_candidate:
+            composer_values.append(composer_candidate)
+        work_candidate = tags.get("work")
+        if work_candidate:
+            work_values.append(work_candidate)
+    artist = _dominant_value_consensus(artist_values)
+    album = _dominant_value_consensus(album_values)
+    composer = _dominant_value_consensus(composer_values)
+    work = _dominant_value_consensus(work_values)
+    return artist, album, composer, work
 
 
 def _dominant_value(candidates: list[str]) -> Optional[str]:
@@ -194,6 +224,39 @@ def _dominant_value(candidates: list[str]) -> Optional[str]:
     if not counter:
         return None
     canonical, _ = counter.most_common(1)[0]
+    return canonical_map.get(canonical)
+
+
+def _dominant_value_consensus(
+    candidates: list[str],
+    *,
+    min_count: int = 2,
+    min_ratio: float = 0.7,
+) -> Optional[str]:
+    """
+    Return a dominant value only if it is consistent enough across tracks.
+
+    This avoids over-weighting tags like composer/performer when a directory
+    contains mixed works/artists (e.g., compilations, mis-tagged files).
+    """
+    if not candidates:
+        return None
+    counter: Counter[str] = Counter()
+    canonical_map: dict[str, str] = {}
+    total = 0
+    for candidate in candidates:
+        cleaned = _clean_tag_hint(candidate)
+        if not cleaned:
+            continue
+        total += 1
+        canonical = cleaned.lower()
+        counter[canonical] += 1
+        canonical_map.setdefault(canonical, cleaned)
+    if not counter:
+        return None
+    canonical, freq = counter.most_common(1)[0]
+    if total >= min_count and (freq / total) < min_ratio:
+        return None
     return canonical_map.get(canonical)
 
 
