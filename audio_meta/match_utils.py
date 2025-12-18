@@ -36,6 +36,34 @@ def normalize_title_for_match(value: Optional[str]) -> Optional[str]:
     )
     cleaned = re.sub(r"[^\w\s]+", " ", cleaned, flags=re.UNICODE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return None
+
+    roman_map = {
+        "i": "1",
+        "ii": "2",
+        "iii": "3",
+        "iv": "4",
+        "v": "5",
+        "vi": "6",
+        "vii": "7",
+        "viii": "8",
+        "ix": "9",
+        "x": "10",
+        "xi": "11",
+        "xii": "12",
+        "xiii": "13",
+        "xiv": "14",
+        "xv": "15",
+        "xvi": "16",
+        "xvii": "17",
+        "xviii": "18",
+        "xix": "19",
+        "xx": "20",
+    }
+    tokens = cleaned.split()
+    normalized_tokens = [roman_map.get(token, token) for token in tokens]
+    cleaned = " ".join(normalized_tokens).strip()
     return cleaned or None
 
 
