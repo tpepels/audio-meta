@@ -6,7 +6,6 @@ from typing import Optional
 from ..contexts import DirectoryContext
 from ..protocols import ReleaseDecisionPlugin
 from ...daemon_types import ReleaseExample
-from ...meta_keys import TRACK_TOTAL
 from ...release_selection import ReleaseDecision
 
 logger = logging.getLogger(__name__)
@@ -43,8 +42,8 @@ class NoCandidateManualSelectionPlugin(ReleaseDecisionPlugin):
                 should_abort=True,
             )
 
-        if sample_meta and ctx.dir_track_count:
-            sample_meta.extra.setdefault(TRACK_TOTAL, str(ctx.dir_track_count))
+        if sample_meta and ctx.dir_track_count and sample_meta.track_total is None:
+            sample_meta.track_total = int(ctx.dir_track_count)
         selection = services.resolve_unmatched_directory(
             ctx.directory,
             sample_meta,

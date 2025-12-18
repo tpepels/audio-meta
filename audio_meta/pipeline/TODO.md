@@ -1,6 +1,6 @@
 # Pipeline Migration TODO
 
-This tracks remaining work to move business logic out of `audio_meta/daemon.py` into pipeline stages.
+This tracks remaining work to move business logic out of `audio_meta/daemon/core.py` into pipeline stages.
 
 ## Next
 

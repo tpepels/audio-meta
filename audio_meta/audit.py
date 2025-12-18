@@ -14,7 +14,6 @@ from .classical import ClassicalHeuristics
 from .config import Settings
 from .heuristics import guess_metadata_from_path
 from .models import TrackMetadata
-from .meta_keys import TRACKNUMBER
 from .organizer import Organizer
 from .tagging import TagWriter
 from .providers.musicbrainz import MusicBrainzClient
@@ -162,14 +161,14 @@ class LibraryAuditor:
         assign_list("performers", "performers", "performer")
 
         track_number = tags.get("tracknumber") or tags.get("track_number")
-        if track_number:
+        if track_number and meta.track_number is None:
             cleaned = track_number.strip()
             if "/" in cleaned:
                 cleaned = cleaned.split("/", 1)[0]
             if cleaned.isdigit():
-                meta.extra[TRACKNUMBER] = int(cleaned)
-        elif guess.track_number is not None:
-            meta.extra[TRACKNUMBER] = guess.track_number
+                meta.track_number = int(cleaned)
+        elif guess.track_number is not None and meta.track_number is None:
+            meta.track_number = guess.track_number
 
     def _report(
         self,

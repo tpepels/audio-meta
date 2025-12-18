@@ -14,6 +14,11 @@ providers:
   musicbrainz_useragent: "audio-meta/0.1 (tom@example.com)"
   discogs_token: "YOUR-DISCOGS-TOKEN"
   discogs_useragent: "audio-meta/0.1 (tom@example.com)"
+  # Network resilience:
+  # - network_retries: number of retries after the initial attempt (so 1 = try twice total).
+  # - network_retry_backoff_seconds: base sleep between retries (exponential backoff).
+  network_retries: 1
+  network_retry_backoff_seconds: 0.5
 
 classical:
   genre_keywords:
@@ -35,9 +40,11 @@ daemon:
   # - show_urls: include clickable MusicBrainz/Discogs links next to options.
   # - expand_mb_candidates: when choices are sparse (or coverage is low), add MusicBrainz search results.
   # - mb_search_limit: max number of extra MB search candidates to show.
+  # - preview_tracks: show a short “sample tracks” section with existing tags/path guesses.
   prompt_show_urls: true
   prompt_expand_mb_candidates: true
   prompt_mb_search_limit: 6
+  prompt_preview_tracks: 3
   # If true, interactive `scan`/`run` will automatically process deferred prompts after scanning completes.
   # Set false if you want scans to finish without prompting; then run `audio-meta deferred` when ready.
   process_deferred_prompts_at_end: true

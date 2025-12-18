@@ -12,7 +12,6 @@ from typing import Dict, List, Optional
 from ..config import ProviderSettings
 from ..heuristics import guess_metadata_from_path
 from ..models import TrackMetadata
-from ..meta_keys import TRACKNUMBER
 from .musicbrainz import LookupResult
 from ..cache import MetadataCache
 
@@ -146,12 +145,7 @@ class DiscogsClient:
         guess = guess_metadata_from_path(meta.path)
         tags = self._read_basic_tags(meta.path)
         title = tags.get("title") or guess.title or meta.title
-        extra_number = meta.extra.get(TRACKNUMBER)
-        track_number: Optional[int]
-        if isinstance(extra_number, int):
-            track_number = extra_number
-        else:
-            track_number = guess.track_number
+        track_number: Optional[int] = meta.track_number or guess.track_number
         duration = meta.duration_seconds or self._probe_duration(meta.path)
         track = self._match_track(
             release.get("tracklist", []), title, track_number, duration

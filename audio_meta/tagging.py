@@ -82,6 +82,8 @@ class TagWriter:
             "genre": meta.genre,
             "work": meta.work,
             "movement": meta.movement,
+            "tracknumber": str(meta.track_number) if meta.track_number else None,
+            "discnumber": str(meta.disc_number) if meta.disc_number else None,
         }
         return {k: v for k, v in mapping.items() if v is not None}
 
@@ -249,12 +251,10 @@ class TagWriter:
         self._set_frame(tags, TCON, meta.genre)
         self._set_frame(tags, TCOM, meta.composer)
         extra = self._stringify_extra(meta.extra)
-        track_number = extra.pop(TRACKNUMBER, None)
-        disc_number = extra.pop(DISCNUMBER, None)
-        if track_number:
-            tags.setall("TRCK", [TRCK(encoding=3, text=track_number)])
-        if disc_number:
-            tags.setall("TPOS", [TPOS(encoding=3, text=disc_number)])
+        if meta.track_number is not None:
+            tags.setall("TRCK", [TRCK(encoding=3, text=str(meta.track_number))])
+        if meta.disc_number is not None:
+            tags.setall("TPOS", [TPOS(encoding=3, text=str(meta.disc_number))])
         for key, value in extra.items():
             self._set_frame(tags, COMM, value, desc=key)
         tags.save(meta.path)
@@ -270,6 +270,8 @@ class TagWriter:
             "GENRE": meta.genre,
             "WORK": meta.work,
             "MOVEMENT": meta.movement,
+            TRACKNUMBER: str(meta.track_number) if meta.track_number else None,
+            DISCNUMBER: str(meta.disc_number) if meta.disc_number else None,
         }
         self._write_vorbis_comments(audio, mapping, meta.extra)
         audio.save()
@@ -290,12 +292,10 @@ class TagWriter:
             if value:
                 self._set_mp4_value(audio, key, value)
         extra = self._stringify_extra(meta.extra)
-        track_number = extra.pop(TRACKNUMBER, None)
-        disc_number = extra.pop(DISCNUMBER, None)
-        if track_number and track_number.isdigit():
-            audio["trkn"] = [(int(track_number), 0)]
-        if disc_number and disc_number.isdigit():
-            audio["disk"] = [(int(disc_number), 0)]
+        if meta.track_number is not None:
+            audio["trkn"] = [(int(meta.track_number), 0)]
+        if meta.disc_number is not None:
+            audio["disk"] = [(int(meta.disc_number), 0)]
         for key, value in extra.items():
             self._set_mp4_value(
                 audio, f"----:com.audio-meta:{key}", value, freeform=True

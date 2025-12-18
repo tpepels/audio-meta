@@ -20,8 +20,8 @@ This project processes a music library by running each directory through a plugi
   - Discogs: `audio_meta/pipeline/plugins/candidates_discogs.py`
 - **Release selection**: `audio_meta/pipeline/plugins/release_decision.py` (uses `audio_meta/release_selection.py`)
 - **Safety gates (defer/confirm)**:
-  - Suspicious fingerprint vs tags: `audio_meta/daemon.py`
-  - Classical credits review: `audio_meta/daemon.py`
+  - Suspicious fingerprint vs tags: `audio_meta/daemon/core.py`
+  - Classical credits review: `audio_meta/daemon/core.py`
 - **Singleton handling**: `audio_meta/pipeline/plugins/singleton_handler.py` (uses `audio_meta/release_home.py`)
 - **Planning (compute intended writes/moves)**: `audio_meta/pipeline/plugins/planner.py`
 - **Unmatched policy / confirmation**: `audio_meta/pipeline/plugins/unmatched_policy.py`

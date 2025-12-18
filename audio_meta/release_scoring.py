@@ -22,6 +22,7 @@ def adjust_release_scores(
     dir_track_count: int,
     dir_year: Optional[int],
     pending_results: list[PendingResult],
+    tag_hints: Optional[dict[str, list[str]]],
     directory: Path,
     discogs_details: dict[str, dict],
 ) -> tuple[dict[str, float], dict[str, float]]:
@@ -64,7 +65,9 @@ def adjust_release_scores(
             title_tokens = normalize_match_text(example.title or "")
             if any(flag in title_tokens for flag in dir_flags):
                 bonus += 0.02
-        bonus += _tag_overlap_bonus(daemon, example, pending_results, directory)
+        bonus += _tag_overlap_bonus(
+            daemon, example, pending_results, tag_hints, directory
+        )
         extra_bonus, coverage = _release_match_quality(
             daemon,
             key,
@@ -134,6 +137,7 @@ def _tag_overlap_bonus(
     daemon: "AudioMetaDaemon",
     example: Optional[ReleaseExample],
     pending_results: list[PendingResult],
+    tag_hints: Optional[dict[str, list[str]]],
     directory: Path,
 ) -> float:
     if not example:
@@ -141,7 +145,7 @@ def _tag_overlap_bonus(
     bonus = 0.0
     first_meta = pending_results[0].meta if pending_results else None
     tag_artist, tag_album, tag_composer, tag_work = _aggregated_tag_hints(
-        pending_results
+        pending_results, tag_hints
     )
     release_artist = example.artist or None
     release_album = example.title or None
@@ -213,6 +217,7 @@ def _positive_weighted_overlap(ratio: Optional[float], weight: float) -> float:
 
 def _aggregated_tag_hints(
     pending_results: list[PendingResult],
+    tag_hints: Optional[dict[str, list[str]]],
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     artist_values: list[str] = []
     album_values: list[str] = []
@@ -235,6 +240,11 @@ def _aggregated_tag_hints(
         work_candidate = tags.get("work")
         if work_candidate:
             work_values.append(work_candidate)
+    if tag_hints:
+        artist_values.extend(tag_hints.get("artist") or [])
+        album_values.extend(tag_hints.get("album") or [])
+        composer_values.extend(tag_hints.get("composer") or [])
+        work_values.extend(tag_hints.get("work") or [])
     artist = _dominant_value_consensus(artist_values)
     album = _dominant_value_consensus(album_values)
     composer = _dominant_value_consensus(composer_values)

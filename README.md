@@ -99,7 +99,7 @@ For a stage-by-stage description of where decisions happen, see `docs/PIPELINE.m
 
 ## Architecture boundaries
 
-- **Runtime**: `audio_meta/cli.py` (arg parsing), `audio_meta/app.py` (wires shared dependencies), `audio_meta/daemon.py` (async workers + watchdog).
+- **Runtime**: `audio_meta/cli.py` (arg parsing), `audio_meta/app.py` (wires shared dependencies), `audio_meta/daemon/core.py` (async workers + watchdog).
 - **Business logic**: pipeline stages in `audio_meta/pipeline/plugins/`, plus reusable modules like `audio_meta/release_selection.py`, `audio_meta/release_home.py`, `audio_meta/release_scoring.py`, `audio_meta/organizer.py`, `audio_meta/tagging.py`.
 - **State**: `audio_meta/cache.py` is the persistent store used by both scan and audit flows.
 

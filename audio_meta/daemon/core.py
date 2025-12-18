@@ -13,9 +13,9 @@ from typing import Optional
 
 from watchdog.observers import Observer
 
-from .daemon_types import DryRunRecorder, PendingResult, ReleaseExample
-from .assignment import best_assignment_max_score
-from .match_utils import (
+from ..daemon_types import DryRunRecorder, PendingResult, ReleaseExample
+from ..assignment import best_assignment_max_score
+from ..match_utils import (
     combine_similarity,
     duration_similarity,
     normalize_match_text,
@@ -23,38 +23,37 @@ from .match_utils import (
     parse_discogs_duration,
     title_similarity,
 )
-from .meta_keys import DISCNUMBER, MATCH_SOURCE, TRACKNUMBER, TRACK_TOTAL
-from .pipeline import (
+from ..pipeline import (
     ProcessingPipeline,
     TrackEnrichmentContext,
     PlanApplyContext,
     DirectoryContext,
     TrackSkipContext,
 )
-from .pipeline import TrackSignalContext
-from .watchdog_handler import WatchHandler
-from .classical import ClassicalHeuristics
-from .heuristics import guess_metadata_from_path
-from .config import Settings
-from .models import TrackMetadata
-from .organizer import Organizer
-from .providers.discogs import DiscogsClient
-from .providers.musicbrainz import (
+from ..pipeline import TrackSignalContext
+from ..watchdog_handler import WatchHandler
+from ..classical import ClassicalHeuristics
+from ..heuristics import guess_metadata_from_path
+from ..config import Settings
+from ..models import TrackMetadata
+from ..organizer import Organizer
+from ..providers.discogs import DiscogsClient
+from ..providers.musicbrainz import (
     LookupResult,
     MusicBrainzClient,
     ReleaseData,
     ReleaseMatch,
 )
-from .scanner import DirectoryBatch, LibraryScanner
-from .tagging import TagWriter
-from .cache import MetadataCache
-from .services import AudioMetaServices
-from . import release_home as release_home_logic
-from .directory_identity import normalize_hint_value
-from . import deferred as deferred_logic
-from . import release_scoring as release_scoring_logic
-from . import directory_identity as directory_identity_logic
-from .album_batching import AlbumBatcher
+from ..scanner import DirectoryBatch, LibraryScanner
+from ..tagging import TagWriter
+from ..cache import MetadataCache
+from ..services import AudioMetaServices
+from .. import release_home as release_home_logic
+from ..directory_identity import normalize_hint_value
+from .. import deferred as deferred_logic
+from .. import release_scoring as release_scoring_logic
+from .. import directory_identity as directory_identity_logic
+from ..album_batching import AlbumBatcher
 
 logger = logging.getLogger(__name__)
 
@@ -233,9 +232,10 @@ class AudioMetaDaemon:
 
         for file_path in batch.files:
             meta = TrackMetadata(path=file_path)
-            if dir_track_count:
-                meta.extra[TRACK_TOTAL] = str(dir_track_count)
+            if dir_track_count and meta.track_total is None:
+                meta.track_total = int(dir_track_count)
             existing_tags = self._read_existing_tags(meta)
+            self._collect_directory_tag_hints(dir_ctx, existing_tags)
             self.pipeline.extract_signals(
                 TrackSignalContext(
                     daemon=self,
@@ -291,7 +291,7 @@ class AudioMetaDaemon:
                     existing_tags=dict(existing_tags),
                 )
             )
-            if result and meta.extra.get(MATCH_SOURCE) == "acoustid":
+            if result and meta.match_source == "acoustid":
                 if self._fingerprint_conflicts_with_tags(existing_tags, meta):
                     dir_ctx.require_release_confirmation = True
                     dir_ctx.diagnostics.setdefault("fingerprint_conflicts", []).append(
@@ -710,6 +710,28 @@ class AudioMetaDaemon:
                 cleaned[key] = value
         return cleaned
 
+    @staticmethod
+    def _collect_directory_tag_hints(
+        dir_ctx: DirectoryContext, existing_tags: dict[str, Optional[str]]
+    ) -> None:
+        if not existing_tags:
+            return
+
+        def add(key: str, value: Optional[str]) -> None:
+            if not value:
+                return
+            if not isinstance(value, str):
+                value = str(value)
+            cleaned = value.strip()
+            if not cleaned:
+                return
+            dir_ctx.tag_hints.setdefault(key, []).append(cleaned)
+
+        add("artist", existing_tags.get("album_artist") or existing_tags.get("artist"))
+        add("album", existing_tags.get("album"))
+        add("composer", existing_tags.get("composer"))
+        add("work", existing_tags.get("work"))
+
     def _apply_tag_hints(
         self, meta: TrackMetadata, tags: dict[str, Optional[str]]
     ) -> None:
@@ -745,19 +767,19 @@ class AudioMetaDaemon:
         assign("conductor", "conductor")
         assign_list("performers", "performers")
         track_number = tags.get("tracknumber") or tags.get("track_number")
-        if track_number and TRACKNUMBER not in meta.extra:
+        if track_number and meta.track_number is None:
             cleaned = track_number.strip()
             if "/" in cleaned:
                 cleaned = cleaned.split("/", 1)[0]
             if cleaned.isdigit():
-                meta.extra[TRACKNUMBER] = int(cleaned)
+                meta.track_number = int(cleaned)
         disc_number = tags.get("discnumber") or tags.get("disc_number")
-        if disc_number and DISCNUMBER not in meta.extra:
+        if disc_number and meta.disc_number is None:
             cleaned = disc_number.strip()
             if "/" in cleaned:
                 cleaned = cleaned.split("/", 1)[0]
             if cleaned.isdigit():
-                meta.extra[DISCNUMBER] = int(cleaned)
+                meta.disc_number = int(cleaned)
 
     @staticmethod
     def _prepare_tag_value(value: Optional[str]) -> Optional[str]:
@@ -777,6 +799,7 @@ class AudioMetaDaemon:
         dir_track_count: int,
         dir_year: Optional[int],
         pending_results: list[PendingResult],
+        tag_hints: Optional[dict[str, list[str]]],
         directory: Path,
         discogs_details: dict[str, dict],
     ) -> tuple[dict[str, float], dict[str, float]]:
@@ -787,6 +810,7 @@ class AudioMetaDaemon:
             dir_track_count=dir_track_count,
             dir_year=dir_year,
             pending_results=pending_results,
+            tag_hints=tag_hints,
             directory=directory,
             discogs_details=discogs_details,
         )
@@ -1112,12 +1136,8 @@ class AudioMetaDaemon:
                     guess = guess_metadata_from_path(meta.path)
                     title = meta.title or guess.title or meta.path.stem
                     title_norm = normalize_title_for_match(title)
-                    track_number = meta.extra.get(TRACKNUMBER)
-                    disc_number = meta.extra.get(DISCNUMBER)
-                    if not isinstance(track_number, int):
-                        track_number = guess.track_number
-                    if not isinstance(disc_number, int):
-                        disc_number = None
+                    track_number = meta.track_number or guess.track_number
+                    disc_number = meta.disc_number
                     candidates: list[dict] = []
                     for track in release_data.tracks:
                         score, components = mb_track_score_breakdown(
@@ -1158,8 +1178,8 @@ class AudioMetaDaemon:
                                 "duration_seconds": meta.duration_seconds,
                                 "musicbrainz_track_id": meta.musicbrainz_track_id,
                                 "musicbrainz_release_id": meta.musicbrainz_release_id,
-                                TRACKNUMBER: meta.extra.get(TRACKNUMBER),
-                                DISCNUMBER: meta.extra.get(DISCNUMBER),
+                                "track_number": meta.track_number,
+                                "disc_number": meta.disc_number,
                             },
                             "guess": {
                                 "title": guess.title,
@@ -1180,12 +1200,8 @@ class AudioMetaDaemon:
                 guess = guess_metadata_from_path(meta.path)
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title)
-                track_number = meta.extra.get(TRACKNUMBER)
-                disc_number = meta.extra.get(DISCNUMBER)
-                if not isinstance(track_number, int):
-                    track_number = guess.track_number
-                if not isinstance(disc_number, int):
-                    disc_number = None
+                track_number = meta.track_number or guess.track_number
+                disc_number = meta.disc_number
                 candidates: list[tuple[float, str]] = []
                 for track in release_data.tracks:
                     score, _ = mb_track_score_breakdown(
@@ -1253,9 +1269,7 @@ class AudioMetaDaemon:
                     guess = guess_metadata_from_path(meta.path)
                     title = meta.title or guess.title or meta.path.stem
                     title_norm = normalize_title_for_match(title) or title
-                    track_number = meta.extra.get(TRACKNUMBER)
-                    if not isinstance(track_number, int):
-                        track_number = guess.track_number
+                    track_number = meta.track_number or guess.track_number
                     candidates: list[dict] = []
                     for track in tracks:
                         score, components = dg_track_score_breakdown(
@@ -1288,7 +1302,7 @@ class AudioMetaDaemon:
                                 "album": meta.album,
                                 "album_artist": meta.album_artist,
                                 "duration_seconds": meta.duration_seconds,
-                                TRACKNUMBER: meta.extra.get(TRACKNUMBER),
+                                "track_number": meta.track_number,
                             },
                             "guess": {
                                 "title": guess.title,
@@ -1309,9 +1323,7 @@ class AudioMetaDaemon:
                 guess = guess_metadata_from_path(meta.path)
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title) or title
-                track_number = meta.extra.get(TRACKNUMBER)
-                if not isinstance(track_number, int):
-                    track_number = guess.track_number
+                track_number = meta.track_number or guess.track_number
                 candidates: list[tuple[float, str]] = []
                 for track in tracks:
                     score, _ = dg_track_score_breakdown(
@@ -1374,11 +1386,11 @@ class AudioMetaDaemon:
         prompt_title: str = "Ambiguous release",
         coverage: Optional[float] = None,
     ) -> Optional[tuple[str, str]]:
-        from .prompting import (
+        from ..prompting import (
             invalid_release_choice_message,
             manual_release_choice_help,
         )
-        from .release_prompt import (
+        from ..release_prompt import (
             append_discogs_search_options,
             append_mb_search_options,
             build_release_prompt_options,
@@ -1391,10 +1403,18 @@ class AudioMetaDaemon:
         mb_search_limit = int(
             getattr(self.settings.daemon, "prompt_mb_search_limit", 6)
         )
-        if sample_meta is None and files:
-            sample_meta = self._synthesize_sample_meta(
-                directory, files, dir_track_count
+        if sample_meta is None:
+            from .prompt_preview import select_prompt_preview_files
+
+            preview_files = select_prompt_preview_files(
+                directory,
+                files,
+                include_extensions=self.settings.library.include_extensions,
             )
+            if preview_files:
+                sample_meta = self._synthesize_sample_meta(
+                    directory, preview_files, dir_track_count
+                )
 
         options = build_release_prompt_options(
             candidates,
@@ -1445,6 +1465,7 @@ class AudioMetaDaemon:
         )
         if coverage is not None:
             print(f"  Coverage: {coverage:.0%} of tracks matched by title/duration")
+        self._print_prompt_track_preview(directory, files)
         if not self.discogs:
             print("  (Discogs disabled; set providers.discogs_token to enable)")
         for option in options:
@@ -1497,20 +1518,28 @@ class AudioMetaDaemon:
         *,
         files: Optional[list[Path]] = None,
     ) -> Optional[tuple[str, str]]:
-        from .prompting import (
+        from ..prompting import (
             invalid_release_choice_message,
             manual_release_choice_help,
         )
-        from .release_prompt import (
+        from ..release_prompt import (
             ReleasePromptOption,
             append_discogs_search_options,
             append_mb_search_options,
         )
 
-        if sample_meta is None and files:
-            sample_meta = self._synthesize_sample_meta(
-                directory, files, dir_track_count
+        if sample_meta is None:
+            from .prompt_preview import select_prompt_preview_files
+
+            preview_files = select_prompt_preview_files(
+                directory,
+                files,
+                include_extensions=self.settings.library.include_extensions,
             )
+            if preview_files:
+                sample_meta = self._synthesize_sample_meta(
+                    directory, preview_files, dir_track_count
+                )
         if not sample_meta:
             self._record_skip(directory, "No sample metadata for manual selection")
             return None
@@ -1555,6 +1584,7 @@ class AudioMetaDaemon:
             f"(artist hint: {artist_hint or 'unknown'}, album hint: {album_hint or 'unknown'}, "
             f"{dir_track_count} tracks detected, year hint {year_hint})."
         )
+        self._print_prompt_track_preview(directory, files)
         print("Select a release to apply:")
         for option in options:
             print(f"  {option.idx}. {option.label}")
@@ -1593,11 +1623,38 @@ class AudioMetaDaemon:
             artist=guess.artist or directory.parent.name,
             album_artist=guess.artist or directory.parent.name,
         )
-        if dir_track_count:
-            meta.extra[TRACK_TOTAL] = str(dir_track_count)
+        if dir_track_count and meta.track_total is None:
+            meta.track_total = int(dir_track_count)
         if guess.track_number is not None:
-            meta.extra[TRACKNUMBER] = int(guess.track_number)
+            meta.track_number = int(guess.track_number)
         return meta
+
+    def _prompt_preview_count(self) -> int:
+        raw = getattr(self.settings.daemon, "prompt_preview_tracks", 3)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 3
+        return max(0, min(value, 20))
+
+    def _print_prompt_track_preview(
+        self, directory: Path, files: Optional[list[Path]]
+    ) -> None:
+        from .prompt_preview import build_prompt_track_preview_lines
+
+        lines = build_prompt_track_preview_lines(
+            directory,
+            files,
+            include_extensions=self.settings.library.include_extensions,
+            limit=self._prompt_preview_count(),
+            read_existing_tags=self._read_existing_tags,
+            apply_tag_hints=self._apply_tag_hints,
+        )
+        if not lines:
+            return
+        print("  Sample tracks:")
+        for line in lines:
+            print(f"    - {line}")
 
     def _directory_hints(
         self, sample_meta: TrackMetadata, directory: Path
@@ -1649,9 +1706,7 @@ class AudioMetaDaemon:
                 if duration:
                     meta.duration_seconds = duration
             guess = guess_metadata_from_path(meta.path)
-            track_number = meta.extra.get(TRACKNUMBER)
-            if not isinstance(track_number, int):
-                track_number = guess.track_number
+            track_number = meta.track_number or guess.track_number
             title = meta.title or guess.title or meta.path.stem
             title_norm = normalize_title_for_match(title) or title
             row: list[float] = []
@@ -1694,10 +1749,10 @@ class AudioMetaDaemon:
                 pending.meta, release_details, track, allow_overwrite=True
             )
             position = track.get("position")
-            if TRACKNUMBER not in pending.meta.extra and isinstance(position, str):
+            if pending.meta.track_number is None and isinstance(position, str):
                 pos_num = self.discogs._parse_track_number(position)
                 if isinstance(pos_num, int):
-                    pending.meta.extra[TRACKNUMBER] = pos_num
+                    pending.meta.track_number = pos_num
             pending.meta.match_confidence = max(
                 pending.meta.match_confidence or 0.0, 0.35 + score * 0.3
             )
@@ -1749,10 +1804,8 @@ class AudioMetaDaemon:
             for pending in to_assign:
                 meta = pending.meta
                 guess = guess_metadata_from_path(meta.path)
-                track_number = meta.extra.get(TRACKNUMBER)
-                if not isinstance(track_number, int):
-                    track_number = guess.track_number
-                disc_number = meta.extra.get(DISCNUMBER)
+                track_number = meta.track_number or guess.track_number
+                disc_number = meta.disc_number
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title)
                 row: list[float] = []
@@ -1817,16 +1870,16 @@ class AudioMetaDaemon:
                     assigned_count += 1
                     assigned_total_score += float(score)
                     release_data.mark_claimed(track.recording_id)
-                    if TRACKNUMBER not in to_assign[
-                        pending_index
-                    ].meta.extra and isinstance(track.number, int):
-                        to_assign[pending_index].meta.extra[TRACKNUMBER] = track.number
-                    if DISCNUMBER not in to_assign[
-                        pending_index
-                    ].meta.extra and isinstance(track.disc_number, int):
-                        to_assign[pending_index].meta.extra[DISCNUMBER] = (
-                            track.disc_number
-                        )
+                    if (
+                        to_assign[pending_index].meta.track_number is None
+                        and isinstance(track.number, int)
+                    ):
+                        to_assign[pending_index].meta.track_number = track.number
+                    if (
+                        to_assign[pending_index].meta.disc_number is None
+                        and isinstance(track.disc_number, int)
+                    ):
+                        to_assign[pending_index].meta.disc_number = track.disc_number
             if applied:
                 ratio = assigned_count / len(to_assign) if to_assign else 1.0
                 avg = (assigned_total_score / assigned_count) if assigned_count else 0.0
@@ -1913,10 +1966,7 @@ class AudioMetaDaemon:
             release_track_total = (
                 track_count or (details and len(details.get("tracklist") or [])) or 0
             )
-            dir_tracks_val = meta.extra.get(TRACK_TOTAL)
-            dir_tracks = None
-            if isinstance(dir_tracks_val, str) and dir_tracks_val.isdigit():
-                dir_tracks = int(dir_tracks_val)
+            dir_tracks = meta.track_total
             if release_track_total and release_track_total >= 3 and dir_tracks:
                 if abs(release_track_total - dir_tracks) > max(
                     3, int(0.15 * max(dir_tracks, release_track_total))

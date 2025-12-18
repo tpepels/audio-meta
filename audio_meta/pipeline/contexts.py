@@ -25,6 +25,7 @@ class DirectoryContext:
     release_scores: dict[str, float] = field(default_factory=dict)
     release_examples: dict[str, ReleaseExample] = field(default_factory=dict)
     discogs_details: dict[str, dict] = field(default_factory=dict)
+    tag_hints: dict[str, list[str]] = field(default_factory=dict)
 
     forced_provider: Optional[str] = None
     forced_release_id: Optional[str] = None

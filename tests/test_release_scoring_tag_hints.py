@@ -44,6 +44,42 @@ class _DaemonForScoring:
 
 
 class TestReleaseScoringTagHints(unittest.TestCase):
+    def test_directory_tag_hints_bias_scores_when_pending_results_empty(self) -> None:
+        daemon = _DaemonForScoring()
+        release_examples = {
+            "discogs:good": ReleaseExample(
+                provider="discogs",
+                title="Études op. 10 & op. 25",
+                artist="Frédéric Chopin, Maurizio Pollini",
+                date="2014",
+                track_total=24,
+                disc_count=1,
+                formats=["CD"],
+            ),
+            "discogs:bad": ReleaseExample(
+                provider="discogs",
+                title="Études op. 10 & op. 25",
+                artist="Murray Perahia",
+                date="2002",
+                track_total=24,
+                disc_count=1,
+                formats=["CD"],
+            ),
+        }
+        scores = {"discogs:good": 1.0, "discogs:bad": 1.0}
+        adjusted, _coverage = adjust_release_scores(
+            daemon,
+            scores=scores,
+            release_examples=release_examples,
+            dir_track_count=24,
+            dir_year=None,
+            pending_results=[],
+            tag_hints={"composer": ["Frédéric Chopin"]},
+            directory=Path("/music/Frederic Chopin/Etudes"),
+            discogs_details={},
+        )
+        self.assertGreater(adjusted["discogs:good"], adjusted["discogs:bad"])
+
     def test_composer_hint_biases_toward_matching_release_artist(self) -> None:
         daemon = _DaemonForScoring()
         pending_results = [
@@ -82,6 +118,7 @@ class TestReleaseScoringTagHints(unittest.TestCase):
             dir_track_count=24,
             dir_year=None,
             pending_results=pending_results,
+            tag_hints=None,
             directory=Path("/music/Frederic Chopin/Etudes"),
             discogs_details={},
         )
@@ -131,6 +168,7 @@ class TestReleaseScoringTagHints(unittest.TestCase):
             dir_track_count=24,
             dir_year=None,
             pending_results=pending_results,
+            tag_hints=None,
             directory=Path("/music/Mixed/Etudes"),
             discogs_details={},
         )
@@ -176,6 +214,7 @@ class TestReleaseScoringTagHints(unittest.TestCase):
             dir_track_count=24,
             dir_year=None,
             pending_results=pending_results,
+            tag_hints=None,
             directory=Path("/music/Frederic Chopin/Etudes"),
             discogs_details={},
         )
@@ -231,6 +270,7 @@ class TestReleaseScoringTagHints(unittest.TestCase):
             dir_track_count=24,
             dir_year=None,
             pending_results=pending_results,
+            tag_hints=None,
             directory=Path("/music/Mixed/Etudes"),
             discogs_details={},
         )

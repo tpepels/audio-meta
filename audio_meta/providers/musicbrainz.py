@@ -6,6 +6,9 @@ import re
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 import difflib
+import socket
+import time
+import urllib.error
 
 try:  # Optional at runtime; matching can still work without AcoustID.
     import acoustid
@@ -23,7 +26,6 @@ except ModuleNotFoundError:  # pragma: no cover
 from ..config import ProviderSettings
 from ..heuristics import PathGuess, guess_metadata_from_path
 from ..models import TrackMetadata
-from ..meta_keys import MATCH_SOURCE
 from ..cache import MetadataCache
 
 logger = logging.getLogger(__name__)
@@ -239,6 +241,8 @@ class MusicBrainzClient:
         self.settings = settings
         self.cache = cache
         self.release_tracker = ReleaseTracker()
+        self._network_disabled_until: float = 0.0
+        self._last_network_warning: float = 0.0
         if musicbrainzngs is not None:
             musicbrainzngs.set_useragent(
                 "audio-meta",
@@ -247,6 +251,8 @@ class MusicBrainzClient:
             )
 
     def enrich(self, meta: TrackMetadata) -> Optional[LookupResult]:
+        if self._network_disabled_until and time.time() < self._network_disabled_until:
+            return None
         guess = guess_metadata_from_path(meta.path)
         album_dir = meta.path.parent
         (
@@ -325,6 +331,47 @@ class MusicBrainzClient:
                 return lookup
         return None
 
+    def _run_with_retries(self, fn, *, label: str, path: Path):
+        retries = int(getattr(self.settings, "network_retries", 1) or 0)
+        backoff = float(getattr(self.settings, "network_retry_backoff_seconds", 0.5) or 0.0)
+        attempts = max(1, 1 + retries)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                if not self._is_transient_network_error(exc):
+                    raise
+                last_exc = exc
+                if attempt >= attempts:
+                    break
+                sleep_for = max(0.0, backoff) * (2 ** (attempt - 1))
+                if sleep_for:
+                    time.sleep(sleep_for)
+        if last_exc:
+            self._note_network_failure(label=label, path=path, exc=last_exc)
+        return None
+
+    def _note_network_failure(self, *, label: str, path: Path, exc: Exception) -> None:
+        now = time.time()
+        # Avoid spamming logs when DNS/network is down: warn at most once per ~10s
+        # and skip further network calls for a short cooldown.
+        cooldown = 30.0
+        self._network_disabled_until = max(self._network_disabled_until, now + cooldown)
+        if now - self._last_network_warning >= 10.0:
+            self._last_network_warning = now
+            logger.warning("%s failed for %s: %s", label, path, exc)
+
+    @staticmethod
+    def _is_transient_network_error(exc: Exception) -> bool:
+        if isinstance(exc, (socket.gaierror, urllib.error.URLError, TimeoutError, ConnectionError)):
+            return True
+        if musicbrainzngs is not None:
+            network_err = getattr(musicbrainzngs, "NetworkError", None)
+            if network_err and isinstance(exc, network_err):
+                return True
+        return False
+
     def _lookup_by_fingerprint(
         self,
         meta: TrackMetadata,
@@ -339,14 +386,21 @@ class MusicBrainzClient:
             return None
         tags = self._read_basic_tags(meta.path)
         album_hint = self._album_hint(meta, tags)
-        try:
-            acoustic_matches = acoustid.lookup(
+        def _lookup():
+            return acoustid.lookup(
                 self.settings.acoustid_api_key,
                 fingerprint,
                 duration,
             )
+
+        try:
+            acoustic_matches = self._run_with_retries(
+                _lookup, label="AcoustID lookup", path=meta.path
+            )
         except Exception as exc:
             logger.warning("AcoustID lookup failed for %s: %s", meta.path, exc)
+            return None
+        if not acoustic_matches:
             return None
         for score, recording_id, title, artist in self._iter_acoustid(acoustic_matches):
             before_extra = dict(meta.extra)
@@ -364,7 +418,7 @@ class MusicBrainzClient:
                 album_hint=album_hint or dir_release_title,
             )
             meta.extra = before_extra
-            meta.extra[MATCH_SOURCE] = "acoustid"
+            meta.match_source = "acoustid"
             meta.acoustid_id = recording_id
             logger.debug(
                 "Fingerprint matched %s (recording %s score %.2f)",
@@ -394,15 +448,33 @@ class MusicBrainzClient:
         if not artist or not title:
             return None
         release = tags.get("album")
-        try:
-            response = musicbrainzngs.search_recordings(
+        def _search():
+            return musicbrainzngs.search_recordings(
                 artist=artist,
                 recording=title,
                 release=release,
                 limit=1,
             )
-        except musicbrainzngs.ResponseError as exc:
-            logger.warning("MusicBrainz search failed for %s: %s", meta.path, exc)
+
+        try:
+            response = self._run_with_retries(
+                _search, label="MusicBrainz recording search", path=meta.path
+            )
+        except Exception as exc:
+            if (
+                musicbrainzngs is not None
+                and getattr(musicbrainzngs, "ResponseError", None)
+                and isinstance(exc, musicbrainzngs.ResponseError)
+            ):
+                logger.warning("MusicBrainz search failed for %s: %s", meta.path, exc)
+                return None
+            if self._is_transient_network_error(exc):
+                self._note_network_failure(
+                    label="MusicBrainz recording search", path=meta.path, exc=exc
+                )
+                return None
+            raise
+        if not response:
             return None
         recordings = response.get("recording-list", [])
         if not recordings:
@@ -459,10 +531,30 @@ class MusicBrainzClient:
             query["artist"] = guess.artist
         if guess.album:
             query["release"] = guess.album
+        def _search():
+            return musicbrainzngs.search_recordings(limit=3, **query)
+
         try:
-            response = musicbrainzngs.search_recordings(limit=3, **query)
-        except musicbrainzngs.ResponseError as exc:
-            logger.debug("Filename guess search failed for %s: %s", meta.path, exc)
+            response = self._run_with_retries(
+                _search, label="MusicBrainz filename search", path=meta.path
+            )
+        except Exception as exc:
+            if (
+                musicbrainzngs is not None
+                and getattr(musicbrainzngs, "ResponseError", None)
+                and isinstance(exc, musicbrainzngs.ResponseError)
+            ):
+                logger.debug(
+                    "Filename guess search failed for %s: %s", meta.path, exc
+                )
+                return None
+            if self._is_transient_network_error(exc):
+                self._note_network_failure(
+                    label="MusicBrainz filename search", path=meta.path, exc=exc
+                )
+                return None
+            raise
+        if not response:
             return None
         candidates = response.get("recording-list", [])
         if not candidates:
@@ -682,10 +774,17 @@ class MusicBrainzClient:
                 if cached:
                     logger.debug("MusicBrainz cache hit for recording %s", recording_id)
                     return cached
-            recording = musicbrainzngs.get_recording_by_id(
-                recording_id,
-                includes=["artists", "releases", "work-rels", "artist-credits"],
-            )["recording"]
+            def _fetch():
+                return musicbrainzngs.get_recording_by_id(
+                    recording_id,
+                    includes=["artists", "releases", "work-rels", "artist-credits"],
+                )["recording"]
+
+            recording = self._run_with_retries(
+                _fetch, label="MusicBrainz recording fetch", path=Path(path)
+            )
+            if not recording:
+                return None
             if self.cache:
                 self.cache.set_recording(recording_id, recording)
             return recording
@@ -702,10 +801,17 @@ class MusicBrainzClient:
         try:
             if musicbrainzngs is None:
                 return None
-            release = musicbrainzngs.get_release_by_id(
-                release_id,
-                includes=["recordings", "artist-credits", "media"],
-            )["release"]
+            def _fetch():
+                return musicbrainzngs.get_release_by_id(
+                    release_id,
+                    includes=["recordings", "artist-credits", "media"],
+                )["release"]
+
+            release = self._run_with_retries(
+                _fetch, label="MusicBrainz release fetch", path=Path(release_id)
+            )
+            if not release:
+                return None
         except musicbrainzngs.ResponseError as exc:
             logger.debug("Failed to load release %s: %s", release_id, exc)
             return None
@@ -910,12 +1016,35 @@ class MusicBrainzClient:
             query["release"] = album_hint
         if not query:
             return []
+        def _search():
+            return musicbrainzngs.search_releases(limit=limit, **query)
+
         try:
-            response = musicbrainzngs.search_releases(limit=limit, **query)
-        except musicbrainzngs.ResponseError as exc:
-            logger.debug(
-                "Release search failed for %s/%s: %s", artist_hint, album_hint, exc
+            response = self._run_with_retries(
+                _search,
+                label="MusicBrainz release search",
+                path=Path(f"{artist_hint or ''}/{album_hint or ''}"),
             )
+        except Exception as exc:
+            if (
+                musicbrainzngs is not None
+                and getattr(musicbrainzngs, "ResponseError", None)
+                and isinstance(exc, musicbrainzngs.ResponseError)
+            ):
+                logger.debug(
+                    "Release search failed for %s/%s: %s",
+                    artist_hint,
+                    album_hint,
+                    exc,
+                )
+                return []
+            if self._is_transient_network_error(exc):
+                self._note_network_failure(
+                    label="MusicBrainz release search", path=Path("."), exc=exc
+                )
+                return []
+            raise
+        if not response:
             return []
         releases = response.get("release-list", [])
         candidates: List[dict] = []

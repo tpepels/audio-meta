@@ -35,6 +35,8 @@ class ProviderSettings(BaseModel):
     musicbrainz_useragent: str = "audio-meta/0.1 (unknown@example.com)"
     discogs_token: Optional[str] = None
     discogs_useragent: str = "audio-meta/0.1 +https://example.com"
+    network_retries: int = 1
+    network_retry_backoff_seconds: float = 0.5
 
 
 class DaemonSettings(BaseModel):
@@ -52,6 +54,7 @@ class DaemonSettings(BaseModel):
     prompt_show_urls: bool = True
     prompt_expand_mb_candidates: bool = True
     prompt_mb_search_limit: int = 6
+    prompt_preview_tracks: int = 3
     process_deferred_prompts_at_end: bool = True
 
     @field_validator("cache_path", mode="before")

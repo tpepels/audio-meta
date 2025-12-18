@@ -43,6 +43,7 @@ def decide_release(
     forced_release_score: float,
     force_prompt: bool,
     release_summary_printed: bool,
+    tag_hints: Optional[dict[str, list[str]]] = None,
     require_confirmation: bool = False,
 ) -> ReleaseDecision:
     discogs_release_details = None
@@ -55,6 +56,7 @@ def decide_release(
         dir_track_count,
         effective_dir_year,
         pending_results,
+        tag_hints,
         directory,
         discogs_details,
     )
@@ -161,10 +163,8 @@ def decide_release(
                 release_scores.items(), key=lambda x: x[1], reverse=True
             )[:5]
             sample_meta = pending_results[0].meta if pending_results else None
-            if sample_meta and dir_track_count:
-                from .meta_keys import TRACK_TOTAL
-
-                sample_meta.extra.setdefault(TRACK_TOTAL, str(dir_track_count))
+            if sample_meta and dir_track_count and sample_meta.track_total is None:
+                sample_meta.track_total = int(dir_track_count)
             selection = daemon._resolve_release_interactively(
                 directory,
                 top_candidates,
@@ -305,10 +305,8 @@ def decide_release(
             )
         if daemon.interactive:
             sample_meta = pending_results[0].meta if pending_results else None
-            if sample_meta and dir_track_count:
-                from .meta_keys import TRACK_TOTAL
-
-                sample_meta.extra.setdefault(TRACK_TOTAL, str(dir_track_count))
+            if sample_meta and dir_track_count and sample_meta.track_total is None:
+                sample_meta.track_total = int(dir_track_count)
             selection = daemon._resolve_release_interactively(
                 directory,
                 ambiguous_candidates,

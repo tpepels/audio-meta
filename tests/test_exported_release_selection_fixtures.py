@@ -95,6 +95,7 @@ class _FixtureDaemon:
         dir_track_count,
         dir_year,
         pending_results,
+        tag_hints,
         directory,
         discogs_details,
     ):
@@ -105,6 +106,7 @@ class _FixtureDaemon:
             dir_track_count=dir_track_count,
             dir_year=dir_year,
             pending_results=pending_results,
+            tag_hints=tag_hints,
             directory=directory,
             discogs_details=discogs_details,
         )
