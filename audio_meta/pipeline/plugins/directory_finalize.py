@@ -14,6 +14,7 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
 
     def finalize(self, ctx: DirectoryContext, applied_plans: bool) -> None:
         daemon = ctx.daemon
+        services = daemon.services
         if daemon.dry_run_recorder:
             return
 
@@ -31,7 +32,13 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
         def _cache_release_state() -> None:
             if not should_cache_release or not directory_hash:
                 return
-            provider, release_plain_id = daemon._split_release_key(best_release_id)
+            if ctx.diagnostics.get("apply_failures"):
+                logger.warning(
+                    "Not caching directory->release binding for %s due to apply failures",
+                    services.display_path(ctx.directory),
+                )
+                return
+            provider, release_plain_id = services.split_release_key(best_release_id)
             effective_score = ctx.release_scores.get(best_release_id, ctx.best_score)
             if effective_score is None:
                 effective_score = 1.0
@@ -42,11 +49,11 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
 
         if not applied_plans:
             if not ctx.planned and not ctx.is_singleton:
-                daemon._maybe_set_release_home(
-                    daemon._release_key(ctx.applied_provider, ctx.applied_release_id),
-                    daemon._album_root(ctx.directory),
+                services.maybe_set_release_home(
+                    services.release_key(ctx.applied_provider, ctx.applied_release_id),
+                    services.album_root(ctx.directory),
                     track_count=ctx.dir_track_count
-                    or daemon._count_audio_files(ctx.directory),
+                    or services.count_audio_files(ctx.directory),
                     directory_hash=daemon.cache.get_directory_hash(ctx.directory),
                 )
             _cache_release_state()
@@ -63,20 +70,20 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
                 continue
             if plan.meta.path != target_path:
                 continue
-            destination_dirs.add(daemon._album_root(plan.meta.path.parent))
+            destination_dirs.add(services.album_root(plan.meta.path.parent))
 
         for dest_dir in destination_dirs:
-            daemon._persist_directory_release(
+            services.persist_directory_release(
                 dest_dir,
                 ctx.applied_provider,
                 ctx.applied_release_id,
                 float(effective_score),
             )
             if not ctx.is_singleton:
-                daemon._maybe_set_release_home(
-                    daemon._release_key(ctx.applied_provider, ctx.applied_release_id),
+                services.maybe_set_release_home(
+                    services.release_key(ctx.applied_provider, ctx.applied_release_id),
                     dest_dir,
-                    track_count=daemon._count_audio_files(dest_dir),
+                    track_count=services.count_audio_files(dest_dir),
                     directory_hash=daemon.cache.get_directory_hash(dest_dir),
                 )
 
@@ -85,8 +92,10 @@ class DefaultDirectoryFinalizePlugin(DirectoryFinalizePlugin):
         if ctx.release_home_dir:
             moved_into_release_home = any(
                 plan.target_path
-                and daemon._path_under_directory(plan.target_path, ctx.release_home_dir)
+                and services.path_under_directory(
+                    plan.target_path, ctx.release_home_dir
+                )
                 for plan in ctx.planned
             )
             if moved_into_release_home:
-                daemon._reprocess_directory(ctx.release_home_dir)
+                services.reprocess_directory(ctx.release_home_dir)

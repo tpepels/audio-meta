@@ -19,6 +19,7 @@ from mutagen.id3 import (
 from mutagen.mp4 import MP4
 from mutagen.flac import FLAC
 
+from .meta_keys import DISCNUMBER, TRACKNUMBER
 from .models import TrackMetadata
 
 logger = logging.getLogger(__name__)
@@ -130,8 +131,8 @@ class TagWriter:
                     "genre": flac_audio.get("GENRE", [None])[0],
                     "work": flac_audio.get("WORK", [None])[0],
                     "movement": flac_audio.get("MOVEMENT", [None])[0],
-                    "tracknumber": flac_audio.get("TRACKNUMBER", [None])[0],
-                    "discnumber": flac_audio.get("DISCNUMBER", [None])[0],
+                    "tracknumber": flac_audio.get(TRACKNUMBER, [None])[0],
+                    "discnumber": flac_audio.get(DISCNUMBER, [None])[0],
                     "date": flac_audio.get("DATE", [None])[0]
                     or flac_audio.get("YEAR", [None])[0],
                 }
@@ -248,8 +249,8 @@ class TagWriter:
         self._set_frame(tags, TCON, meta.genre)
         self._set_frame(tags, TCOM, meta.composer)
         extra = self._stringify_extra(meta.extra)
-        track_number = extra.pop("TRACKNUMBER", None)
-        disc_number = extra.pop("DISCNUMBER", None)
+        track_number = extra.pop(TRACKNUMBER, None)
+        disc_number = extra.pop(DISCNUMBER, None)
         if track_number:
             tags.setall("TRCK", [TRCK(encoding=3, text=track_number)])
         if disc_number:
@@ -289,8 +290,8 @@ class TagWriter:
             if value:
                 self._set_mp4_value(audio, key, value)
         extra = self._stringify_extra(meta.extra)
-        track_number = extra.pop("TRACKNUMBER", None)
-        disc_number = extra.pop("DISCNUMBER", None)
+        track_number = extra.pop(TRACKNUMBER, None)
+        disc_number = extra.pop(DISCNUMBER, None)
         if track_number and track_number.isdigit():
             audio["trkn"] = [(int(track_number), 0)]
         if disc_number and disc_number.isdigit():

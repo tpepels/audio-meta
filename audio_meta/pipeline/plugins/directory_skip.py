@@ -14,6 +14,7 @@ class DefaultDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
 
     def should_skip(self, ctx: DirectoryContext) -> Optional[bool]:
         daemon = ctx.daemon
+        services = daemon.services
         if ctx.force_prompt:
             return False
         if not getattr(daemon, "release_cache_enabled", True):
@@ -33,7 +34,7 @@ class DefaultDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
         ):
             logger.debug(
                 "Skipping %s; directory unchanged (hash=%s)",
-                daemon._display_path(ctx.directory),
+                services.display_path(ctx.directory),
                 ctx.directory_hash[:8],
             )
             ctx.diagnostics.setdefault("skip_reason", "directory_hash_unchanged")

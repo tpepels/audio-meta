@@ -21,7 +21,7 @@ class DefaultUnmatchedPolicyPlugin(UnmatchedPolicyPlugin):
         if (
             daemon.defer_prompts
             and not ctx.force_prompt
-            and not daemon._processing_deferred
+            and not services.processing_deferred
         ):
             services.schedule_deferred_directory(ctx.directory, "unmatched_tracks")
             return UnmatchedDecision(should_abort=True)

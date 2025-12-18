@@ -14,6 +14,7 @@ from .cache import MetadataCache
 from .config import LibrarySettings, OrganizerSettings
 from .heuristics import guess_metadata_from_path
 from .models import TrackMetadata
+from .meta_keys import TRACKNUMBER
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ class Organizer:
     def _build_filename(self, meta: TrackMetadata) -> str:
         title = meta.title
         trackno: Optional[int] = None
-        tags = meta.extra.get("TRACKNUMBER")
+        tags = meta.extra.get(TRACKNUMBER)
         if isinstance(tags, int):
             trackno = tags
         elif isinstance(tags, str):

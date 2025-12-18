@@ -9,6 +9,7 @@ from typing import Any, Optional, cast
 
 from ..daemon import AudioMetaDaemon
 from ..daemon_types import PendingResult, ReleaseExample
+from ..meta_keys import TRACK_TOTAL
 from ..models import TrackMetadata
 from ..providers.musicbrainz import ReleaseData
 from ..providers.musicbrainz import LookupResult
@@ -118,7 +119,7 @@ def run(
     for file_path in prepared.files:
         meta = TrackMetadata(path=file_path)
         if dir_ctx.dir_track_count:
-            meta.extra["TRACK_TOTAL"] = str(dir_ctx.dir_track_count)
+            meta.extra[TRACK_TOTAL] = str(dir_ctx.dir_track_count)
         existing_tags = daemon._read_existing_tags(meta)
         daemon._apply_tag_hints(meta, existing_tags)
         daemon.pipeline.extract_signals(

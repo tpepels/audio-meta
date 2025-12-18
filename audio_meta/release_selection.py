@@ -162,7 +162,9 @@ def decide_release(
             )[:5]
             sample_meta = pending_results[0].meta if pending_results else None
             if sample_meta and dir_track_count:
-                sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
+                from .meta_keys import TRACK_TOTAL
+
+                sample_meta.extra.setdefault(TRACK_TOTAL, str(dir_track_count))
             selection = daemon._resolve_release_interactively(
                 directory,
                 top_candidates,
@@ -171,6 +173,9 @@ def decide_release(
                 dir_track_count,
                 effective_dir_year,
                 discogs_details,
+                files=[p.meta.path for p in pending_results]
+                if pending_results
+                else None,
                 prompt_title="Low-coverage match",
                 coverage=coverage,
             )
@@ -249,6 +254,9 @@ def decide_release(
                 dir_track_count,
                 effective_dir_year,
                 discogs_details,
+                files=[p.meta.path for p in pending_results]
+                if pending_results
+                else None,
                 prompt_title="Confirm match",
             )
             if selection is None:
@@ -298,7 +306,9 @@ def decide_release(
         if daemon.interactive:
             sample_meta = pending_results[0].meta if pending_results else None
             if sample_meta and dir_track_count:
-                sample_meta.extra.setdefault("TRACK_TOTAL", str(dir_track_count))
+                from .meta_keys import TRACK_TOTAL
+
+                sample_meta.extra.setdefault(TRACK_TOTAL, str(dir_track_count))
             selection = daemon._resolve_release_interactively(
                 directory,
                 ambiguous_candidates,
@@ -307,6 +317,9 @@ def decide_release(
                 dir_track_count,
                 effective_dir_year,
                 discogs_details,
+                files=[p.meta.path for p in pending_results]
+                if pending_results
+                else None,
             )
             if selection is None:
                 daemon._record_skip(

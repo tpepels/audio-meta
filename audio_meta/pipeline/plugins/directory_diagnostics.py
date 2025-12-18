@@ -14,4 +14,6 @@ class DefaultDirectoryDiagnosticsPlugin(DirectoryDiagnosticsPlugin):
             return
         if any(p.matched for p in ctx.pending_results):
             return
-        ctx.daemon._record_skip(ctx.directory, "No metadata match found for directory")
+        ctx.daemon.services.record_skip(
+            ctx.directory, "No metadata match found for directory"
+        )

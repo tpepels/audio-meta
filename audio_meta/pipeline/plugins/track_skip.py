@@ -21,7 +21,7 @@ class DefaultTrackSkipPolicyPlugin(TrackSkipPolicyPlugin):
         if daemon.dry_run_recorder:
             return TrackSkipDecision(should_skip=False)
 
-        stat_before = daemon._safe_stat(ctx.file_path)
+        stat_before = daemon.services.safe_stat(ctx.file_path)
         if not stat_before:
             return TrackSkipDecision(should_skip=False)
 

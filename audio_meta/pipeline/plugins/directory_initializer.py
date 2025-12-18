@@ -13,7 +13,7 @@ class DefaultDirectoryInitializerPlugin(DirectoryInitializerPlugin):
         services = daemon.services
         if not getattr(daemon, "release_cache_enabled", True):
             return
-        cached_release_entry = daemon._cached_release_for_directory(ctx.directory)
+        cached_release_entry = services.cached_release_for_directory(ctx.directory)
         if not cached_release_entry and ctx.hash_release_entry:
             cached_release_entry = ctx.hash_release_entry
         if not cached_release_entry:
@@ -38,7 +38,7 @@ class DefaultDirectoryInitializerPlugin(DirectoryInitializerPlugin):
             )
             return
         if provider == "discogs" and getattr(daemon, "discogs", None):
-            details = daemon.discogs.get_release(int(cached_release_id))
+            details = services.fetch_discogs_release(cached_release_id)
             if not details:
                 return
             key = services.release_key("discogs", cached_release_id)

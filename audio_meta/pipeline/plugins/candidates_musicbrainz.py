@@ -10,6 +10,7 @@ class MusicBrainzCandidateSourcePlugin(CandidateSourcePlugin):
 
     def add(self, ctx: DirectoryContext) -> None:
         daemon = ctx.daemon
+        services = daemon.services
         if not getattr(daemon, "musicbrainz", None):
             return
         for pending in ctx.pending_results:
@@ -18,7 +19,7 @@ class MusicBrainzCandidateSourcePlugin(CandidateSourcePlugin):
             release_id = pending.meta.musicbrainz_release_id
             if not release_id:
                 continue
-            key = daemon._release_key("musicbrainz", release_id)
+            key = services.release_key("musicbrainz", release_id)
             ctx.release_scores[key] = max(
                 ctx.release_scores.get(key, 0.0), float(pending.result.score)
             )

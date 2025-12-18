@@ -3,6 +3,8 @@ from __future__ import annotations
 from ..contexts import DirectoryContext
 from ..protocols import CandidateSourcePlugin
 from ...daemon_types import ReleaseExample
+from ...meta_keys import TRACK_TOTAL
+from ...models import TrackMetadata
 
 
 class DiscogsCandidateSourcePlugin(CandidateSourcePlugin):
@@ -13,11 +15,13 @@ class DiscogsCandidateSourcePlugin(CandidateSourcePlugin):
         services = daemon.services
         if not getattr(daemon, "discogs", None):
             return
-        if not ctx.pending_results:
+        sample_meta = ctx.pending_results[0].meta if ctx.pending_results else None
+        if sample_meta is None and ctx.files:
+            sample_meta = TrackMetadata(path=ctx.files[0])
+        if sample_meta is None:
             return
-        sample_meta = ctx.pending_results[0].meta
         if ctx.dir_track_count:
-            sample_meta.extra.setdefault("TRACK_TOTAL", str(ctx.dir_track_count))
+            sample_meta.extra.setdefault(TRACK_TOTAL, str(ctx.dir_track_count))
         for cand in services.discogs_candidates(sample_meta):
             release_id = str(cand.get("id"))
             if not release_id:

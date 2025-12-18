@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from ..cache import MetadataCache
-from .cleanup import fit_destination_path, safe_rename, path_exists
+from ..fs_utils import fit_destination_path, path_exists, safe_rename
 
 
 def run(cache: MetadataCache) -> None:

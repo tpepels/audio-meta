@@ -23,6 +23,7 @@ from .match_utils import (
     parse_discogs_duration,
     title_similarity,
 )
+from .meta_keys import DISCNUMBER, MATCH_SOURCE, TRACKNUMBER, TRACK_TOTAL
 from .pipeline import (
     ProcessingPipeline,
     TrackEnrichmentContext,
@@ -233,7 +234,7 @@ class AudioMetaDaemon:
         for file_path in batch.files:
             meta = TrackMetadata(path=file_path)
             if dir_track_count:
-                meta.extra["TRACK_TOTAL"] = str(dir_track_count)
+                meta.extra[TRACK_TOTAL] = str(dir_track_count)
             existing_tags = self._read_existing_tags(meta)
             self.pipeline.extract_signals(
                 TrackSignalContext(
@@ -290,7 +291,7 @@ class AudioMetaDaemon:
                     existing_tags=dict(existing_tags),
                 )
             )
-            if result and meta.extra.get("MATCH_SOURCE") == "acoustid":
+            if result and meta.extra.get(MATCH_SOURCE) == "acoustid":
                 if self._fingerprint_conflicts_with_tags(existing_tags, meta):
                     dir_ctx.require_release_confirmation = True
                     dir_ctx.diagnostics.setdefault("fingerprint_conflicts", []).append(
@@ -409,9 +410,17 @@ class AudioMetaDaemon:
             logger.debug("No actionable files in %s", batch.directory)
             self.pipeline.complete_directory(dir_ctx, applied_plans=False)
             return
+        failures: list[str] = []
+        applied_any = False
         for plan in planned:
-            self.pipeline.apply_plan(PlanApplyContext(daemon=self, plan=plan))
-        self.pipeline.complete_directory(dir_ctx, applied_plans=True)
+            ok = self.pipeline.apply_plan(PlanApplyContext(daemon=self, plan=plan))
+            if ok:
+                applied_any = True
+            else:
+                failures.append(str(getattr(plan.meta, "path", "")))
+        if failures:
+            dir_ctx.diagnostics.setdefault("apply_failures", failures)
+        self.pipeline.complete_directory(dir_ctx, applied_plans=applied_any)
 
     def _fingerprint_conflicts_with_tags(
         self, existing_tags: dict[str, Optional[str]], meta: TrackMetadata
@@ -736,19 +745,19 @@ class AudioMetaDaemon:
         assign("conductor", "conductor")
         assign_list("performers", "performers")
         track_number = tags.get("tracknumber") or tags.get("track_number")
-        if track_number and "TRACKNUMBER" not in meta.extra:
+        if track_number and TRACKNUMBER not in meta.extra:
             cleaned = track_number.strip()
             if "/" in cleaned:
                 cleaned = cleaned.split("/", 1)[0]
             if cleaned.isdigit():
-                meta.extra["TRACKNUMBER"] = int(cleaned)
+                meta.extra[TRACKNUMBER] = int(cleaned)
         disc_number = tags.get("discnumber") or tags.get("disc_number")
-        if disc_number and "DISCNUMBER" not in meta.extra:
+        if disc_number and DISCNUMBER not in meta.extra:
             cleaned = disc_number.strip()
             if "/" in cleaned:
                 cleaned = cleaned.split("/", 1)[0]
             if cleaned.isdigit():
-                meta.extra["DISCNUMBER"] = int(cleaned)
+                meta.extra[DISCNUMBER] = int(cleaned)
 
     @staticmethod
     def _prepare_tag_value(value: Optional[str]) -> Optional[str]:
@@ -1103,8 +1112,8 @@ class AudioMetaDaemon:
                     guess = guess_metadata_from_path(meta.path)
                     title = meta.title or guess.title or meta.path.stem
                     title_norm = normalize_title_for_match(title)
-                    track_number = meta.extra.get("TRACKNUMBER")
-                    disc_number = meta.extra.get("DISCNUMBER")
+                    track_number = meta.extra.get(TRACKNUMBER)
+                    disc_number = meta.extra.get(DISCNUMBER)
                     if not isinstance(track_number, int):
                         track_number = guess.track_number
                     if not isinstance(disc_number, int):
@@ -1149,8 +1158,8 @@ class AudioMetaDaemon:
                                 "duration_seconds": meta.duration_seconds,
                                 "musicbrainz_track_id": meta.musicbrainz_track_id,
                                 "musicbrainz_release_id": meta.musicbrainz_release_id,
-                                "TRACKNUMBER": meta.extra.get("TRACKNUMBER"),
-                                "DISCNUMBER": meta.extra.get("DISCNUMBER"),
+                                TRACKNUMBER: meta.extra.get(TRACKNUMBER),
+                                DISCNUMBER: meta.extra.get(DISCNUMBER),
                             },
                             "guess": {
                                 "title": guess.title,
@@ -1171,8 +1180,8 @@ class AudioMetaDaemon:
                 guess = guess_metadata_from_path(meta.path)
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title)
-                track_number = meta.extra.get("TRACKNUMBER")
-                disc_number = meta.extra.get("DISCNUMBER")
+                track_number = meta.extra.get(TRACKNUMBER)
+                disc_number = meta.extra.get(DISCNUMBER)
                 if not isinstance(track_number, int):
                     track_number = guess.track_number
                 if not isinstance(disc_number, int):
@@ -1244,7 +1253,7 @@ class AudioMetaDaemon:
                     guess = guess_metadata_from_path(meta.path)
                     title = meta.title or guess.title or meta.path.stem
                     title_norm = normalize_title_for_match(title) or title
-                    track_number = meta.extra.get("TRACKNUMBER")
+                    track_number = meta.extra.get(TRACKNUMBER)
                     if not isinstance(track_number, int):
                         track_number = guess.track_number
                     candidates: list[dict] = []
@@ -1279,7 +1288,7 @@ class AudioMetaDaemon:
                                 "album": meta.album,
                                 "album_artist": meta.album_artist,
                                 "duration_seconds": meta.duration_seconds,
-                                "TRACKNUMBER": meta.extra.get("TRACKNUMBER"),
+                                TRACKNUMBER: meta.extra.get(TRACKNUMBER),
                             },
                             "guess": {
                                 "title": guess.title,
@@ -1300,7 +1309,7 @@ class AudioMetaDaemon:
                 guess = guess_metadata_from_path(meta.path)
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title) or title
-                track_number = meta.extra.get("TRACKNUMBER")
+                track_number = meta.extra.get(TRACKNUMBER)
                 if not isinstance(track_number, int):
                     track_number = guess.track_number
                 candidates: list[tuple[float, str]] = []
@@ -1361,9 +1370,20 @@ class AudioMetaDaemon:
         dir_year: Optional[int],
         discogs_details: dict[str, dict],
         *,
+        files: Optional[list[Path]] = None,
         prompt_title: str = "Ambiguous release",
         coverage: Optional[float] = None,
     ) -> Optional[tuple[str, str]]:
+        from .prompting import (
+            invalid_release_choice_message,
+            manual_release_choice_help,
+        )
+        from .release_prompt import (
+            append_discogs_search_options,
+            append_mb_search_options,
+            build_release_prompt_options,
+        )
+
         show_urls = bool(getattr(self.settings.daemon, "prompt_show_urls", True))
         expand_mb = bool(
             getattr(self.settings.daemon, "prompt_expand_mb_candidates", True)
@@ -1371,58 +1391,20 @@ class AudioMetaDaemon:
         mb_search_limit = int(
             getattr(self.settings.daemon, "prompt_mb_search_limit", 6)
         )
-
-        def release_url(provider: str, release_id: str) -> Optional[str]:
-            if not provider or not release_id:
-                return None
-            if provider == "musicbrainz":
-                return f"https://musicbrainz.org/release/{release_id}"
-            if provider == "discogs":
-                if str(release_id).isdigit():
-                    return f"https://www.discogs.com/release/{release_id}"
-                return None
-            return None
-
-        options: list[dict] = []
-        idx = 1
-        for key, score in sorted(candidates, key=lambda x: x[1], reverse=True):
-            provider, release_id = self._split_release_key(key)
-            example = release_examples.get(key)
-            title = example.title if example else ""
-            artist = example.artist if example else ""
-            year = self._parse_year(example.date if example else None) or "?"
-            track_count = example.track_total if example else None
-            disc_count = example.disc_count if example else None
-            formats = example.formats if example else []
-            disc_label = self._disc_label(disc_count) or "disc count unknown"
-            format_label = ", ".join(formats) if formats else "format unknown"
-            tag = "MB" if provider == "musicbrainz" else "DG"
-            label = self._format_option_label(
-                idx,
-                tag,
-                artist or "Unknown Artist",
-                title or "Unknown Title",
-                year,
-                track_count or "?",
-                disc_label,
-                format_label,
-                score,
-                release_id,
+        if sample_meta is None and files:
+            sample_meta = self._synthesize_sample_meta(
+                directory, files, dir_track_count
             )
-            if show_urls:
-                url = release_url(provider, release_id)
-                if url:
-                    label = f"{label}  {url}"
-            options.append(
-                {
-                    "idx": idx,
-                    "provider": provider,
-                    "id": release_id,
-                    "label": label,
-                    "score": score,
-                }
-            )
-            idx += 1
+
+        options = build_release_prompt_options(
+            candidates,
+            release_examples,
+            split_release_key=self._split_release_key,
+            parse_year=self._parse_year,
+            disc_label=self._disc_label,
+            format_option_label=self._format_option_label,
+            show_urls=show_urls,
+        )
         if (
             sample_meta
             and expand_mb
@@ -1436,91 +1418,26 @@ class AudioMetaDaemon:
                     )
                 except Exception:  # pragma: no cover
                     mb_candidates = []
-                seen_pairs = {(opt["provider"], opt["id"]) for opt in options}
-                for cand in mb_candidates:
-                    release_id = str(cand.get("id") or "").strip()
-                    if not release_id:
-                        continue
-                    pair = ("musicbrainz", release_id)
-                    if pair in seen_pairs:
-                        continue
-                    year = self._parse_year(cand.get("date")) or "?"
-                    track_count = cand.get("track_total") or "?"
-                    disc_label = (
-                        self._disc_label(cand.get("disc_count")) or "disc count unknown"
-                    )
-                    format_label = (
-                        ", ".join(cand.get("formats") or []) or "format unknown"
-                    )
-                    score = cand.get("score")
-                    label = self._format_option_label(
-                        idx,
-                        "MB",
-                        cand.get("artist") or "Unknown Artist",
-                        cand.get("title") or "Unknown Title",
-                        year,
-                        track_count,
-                        disc_label,
-                        format_label,
-                        score,
-                        release_id,
-                    )
-                    if show_urls:
-                        url = release_url("musicbrainz", release_id)
-                        if url:
-                            label = f"{label}  {url}"
-                    options.append(
-                        {
-                            "idx": idx,
-                            "provider": "musicbrainz",
-                            "id": release_id,
-                            "label": label,
-                            "score": score,
-                        }
-                    )
-                    seen_pairs.add(pair)
-                    idx += 1
+                append_mb_search_options(
+                    options,
+                    mb_candidates,
+                    show_urls=show_urls,
+                    parse_year=self._parse_year,
+                    disc_label=self._disc_label,
+                    format_option_label=self._format_option_label,
+                )
         if sample_meta and self.discogs:
-            seen_pairs = {(opt["provider"], opt["id"]) for opt in options}
-            for cand in self._discogs_candidates(sample_meta):
-                release_id = str(cand.get("id") or "").strip()
-                if not release_id:
-                    continue
-                pair = ("discogs", release_id)
-                if pair in seen_pairs:
-                    continue
-                label = self._format_option_label(
-                    idx,
-                    "DG",
-                    cand.get("artist") or "Unknown",
-                    cand.get("title") or "Unknown Title",
-                    cand.get("year") or "?",
-                    cand.get("track_count") or "?",
-                    cand.get("disc_label") or "disc count unknown",
-                    cand.get("format_label") or "format unknown",
-                    None,
-                    cand["id"],
-                )
-                if show_urls:
-                    url = release_url("discogs", release_id)
-                    if url:
-                        label = f"{label}  {url}"
-                options.append(
-                    {
-                        "idx": idx,
-                        "provider": "discogs",
-                        "id": release_id,
-                        "label": label,
-                        "score": cand.get("score", 0.0),
-                    }
-                )
-                seen_pairs.add(pair)
-                idx += 1
+            append_discogs_search_options(
+                options,
+                self._discogs_candidates(sample_meta),
+                show_urls=show_urls,
+                format_option_label=self._format_option_label,
+            )
         if not options:
             self._record_skip(directory, "No interactive release options available")
             logger.warning("No interactive options available for %s", directory)
             return None
-        options.sort(key=lambda opt: (opt.get("score") or 0.0), reverse=True)
+        options.sort(key=lambda opt: float(opt.score or 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self._display_path(directory)
         print(
@@ -1531,15 +1448,12 @@ class AudioMetaDaemon:
         if not self.discogs:
             print("  (Discogs disabled; set providers.discogs_token to enable)")
         for option in options:
-            print(f"  {option['idx']}. {option['label']}")
+            print(f"  {option.idx}. {option.label}")
         print("  0. Skip this directory")
         print("  d. Delete this directory")
         print("  a. Archive this directory")
         print("  i. Ignore this directory")
-        if self.discogs:
-            print("  mb:<release-id> or dg:<release-id> to enter an ID manually")
-        else:
-            print("  mb:<release-id> to enter an ID manually")
+        print(manual_release_choice_help(discogs_enabled=bool(self.discogs)))
         while True:
             choice = input("Select release (0=skip): ").strip()
             if choice.lower() in {"0", "s", "skip"}:
@@ -1563,17 +1477,16 @@ class AudioMetaDaemon:
             if manual:
                 return manual
             if not choice.isdigit():
-                if self.discogs:
-                    print("Invalid selection; enter a number or mb:/dg: identifier.")
-                else:
-                    print("Invalid selection; enter a number or mb: identifier.")
+                print(
+                    invalid_release_choice_message(discogs_enabled=bool(self.discogs))
+                )
                 continue
             number = int(choice)
-            match = next((opt for opt in options if opt["idx"] == number), None)
+            match = next((opt for opt in options if opt.idx == number), None)
             if not match:
                 print("Selection out of range.")
                 continue
-            return match["provider"], match["id"]
+            return match.provider, match.release_id
 
     def _resolve_unmatched_directory(
         self,
@@ -1581,70 +1494,50 @@ class AudioMetaDaemon:
         sample_meta: Optional[TrackMetadata],
         dir_track_count: int,
         dir_year: Optional[int],
+        *,
+        files: Optional[list[Path]] = None,
     ) -> Optional[tuple[str, str]]:
+        from .prompting import (
+            invalid_release_choice_message,
+            manual_release_choice_help,
+        )
+        from .release_prompt import (
+            ReleasePromptOption,
+            append_discogs_search_options,
+            append_mb_search_options,
+        )
+
+        if sample_meta is None and files:
+            sample_meta = self._synthesize_sample_meta(
+                directory, files, dir_track_count
+            )
         if not sample_meta:
             self._record_skip(directory, "No sample metadata for manual selection")
             return None
         artist_hint, album_hint = self._directory_hints(sample_meta, directory)
-        options: list[dict] = []
-        idx = 1
-        mb_candidates = self.musicbrainz.search_release_candidates(
-            artist_hint, album_hint, limit=6
+        show_urls = bool(getattr(self.settings.daemon, "prompt_show_urls", True))
+        mb_search_limit = int(
+            getattr(self.settings.daemon, "prompt_mb_search_limit", 6)
         )
-        for cand in mb_candidates:
-            year = self._parse_year(cand.get("date")) or "?"
-            track_count = cand.get("track_total") or "?"
-            disc_label = (
-                self._disc_label(cand.get("disc_count")) or "disc count unknown"
-            )
-            format_label = ", ".join(cand.get("formats") or []) or "format unknown"
-            score = cand.get("score")
-            label = self._format_option_label(
-                idx,
-                "MB",
-                cand.get("artist") or "Unknown Artist",
-                cand.get("title") or "Unknown Title",
-                year,
-                track_count,
-                disc_label,
-                format_label,
-                score,
-                cand["id"],
-            )
-            options.append(
-                {
-                    "idx": idx,
-                    "provider": "musicbrainz",
-                    "id": cand["id"],
-                    "label": label,
-                    "score": score,
-                }
-            )
-            idx += 1
+        options: list[ReleasePromptOption] = []
+        mb_candidates = self.musicbrainz.search_release_candidates(
+            artist_hint, album_hint, limit=mb_search_limit
+        )
+        append_mb_search_options(
+            options,
+            mb_candidates,
+            show_urls=show_urls,
+            parse_year=self._parse_year,
+            disc_label=self._disc_label,
+            format_option_label=self._format_option_label,
+        )
         if self.discogs and sample_meta:
-            for cand in self._discogs_candidates(sample_meta):
-                label = self._format_option_label(
-                    idx,
-                    "DG",
-                    cand.get("artist") or "Unknown",
-                    cand.get("title") or "Unknown Title",
-                    cand.get("year") or "?",
-                    cand.get("track_count") or "?",
-                    cand.get("disc_label") or "disc count unknown",
-                    cand.get("format_label") or "format unknown",
-                    None,
-                    cand["id"],
-                )
-                options.append(
-                    {
-                        "idx": idx,
-                        "provider": "discogs",
-                        "id": cand["id"],
-                        "label": label,
-                        "score": cand.get("score", 0.0),
-                    }
-                )
-                idx += 1
+            append_discogs_search_options(
+                options,
+                self._discogs_candidates(sample_meta),
+                show_urls=show_urls,
+                format_option_label=self._format_option_label,
+            )
         if not options:
             self._record_skip(directory, "No manual candidates available")
             logger.warning(
@@ -1654,7 +1547,7 @@ class AudioMetaDaemon:
                 album_hint,
             )
             return None
-        options.sort(key=lambda opt: opt.get("score", 0.0), reverse=True)
+        options.sort(key=lambda opt: float(opt.score or 0.0), reverse=True)
         year_hint = f"{dir_year}" if dir_year else "unknown"
         display = self._display_path(directory)
         print(
@@ -1664,12 +1557,9 @@ class AudioMetaDaemon:
         )
         print("Select a release to apply:")
         for option in options:
-            print(f"  {option['idx']}. {option['label']}")
+            print(f"  {option.idx}. {option.label}")
         print("  0. Skip this directory")
-        if self.discogs:
-            print("  mb:<release-id> or dg:<release-id> to enter an ID manually")
-        else:
-            print("  mb:<release-id> to enter an ID manually")
+        print(manual_release_choice_help(discogs_enabled=bool(self.discogs)))
         while True:
             choice = input("Select release (0=skip): ").strip()
             if choice.lower() in {"0", "s", "skip"}:
@@ -1679,17 +1569,35 @@ class AudioMetaDaemon:
             if manual:
                 return manual
             if not choice.isdigit():
-                if self.discogs:
-                    print("Invalid selection; enter a number or mb:/dg: identifier.")
-                else:
-                    print("Invalid selection; enter a number or mb: identifier.")
+                print(
+                    invalid_release_choice_message(discogs_enabled=bool(self.discogs))
+                )
                 continue
             number = int(choice)
-            match = next((opt for opt in options if opt["idx"] == number), None)
+            match = next((opt for opt in options if opt.idx == number), None)
             if not match:
                 print("Selection out of range.")
                 continue
-            return match["provider"], match["id"]
+            return match.provider, match.release_id
+
+    @staticmethod
+    def _synthesize_sample_meta(
+        directory: Path, files: list[Path], dir_track_count: int
+    ) -> TrackMetadata:
+        file_path = files[0]
+        guess = guess_metadata_from_path(file_path)
+        meta = TrackMetadata(
+            path=file_path,
+            title=guess.title,
+            album=guess.album or directory.name,
+            artist=guess.artist or directory.parent.name,
+            album_artist=guess.artist or directory.parent.name,
+        )
+        if dir_track_count:
+            meta.extra[TRACK_TOTAL] = str(dir_track_count)
+        if guess.track_number is not None:
+            meta.extra[TRACKNUMBER] = int(guess.track_number)
+        return meta
 
     def _directory_hints(
         self, sample_meta: TrackMetadata, directory: Path
@@ -1741,7 +1649,7 @@ class AudioMetaDaemon:
                 if duration:
                     meta.duration_seconds = duration
             guess = guess_metadata_from_path(meta.path)
-            track_number = meta.extra.get("TRACKNUMBER")
+            track_number = meta.extra.get(TRACKNUMBER)
             if not isinstance(track_number, int):
                 track_number = guess.track_number
             title = meta.title or guess.title or meta.path.stem
@@ -1786,10 +1694,10 @@ class AudioMetaDaemon:
                 pending.meta, release_details, track, allow_overwrite=True
             )
             position = track.get("position")
-            if "TRACKNUMBER" not in pending.meta.extra and isinstance(position, str):
+            if TRACKNUMBER not in pending.meta.extra and isinstance(position, str):
                 pos_num = self.discogs._parse_track_number(position)
                 if isinstance(pos_num, int):
-                    pending.meta.extra["TRACKNUMBER"] = pos_num
+                    pending.meta.extra[TRACKNUMBER] = pos_num
             pending.meta.match_confidence = max(
                 pending.meta.match_confidence or 0.0, 0.35 + score * 0.3
             )
@@ -1841,10 +1749,10 @@ class AudioMetaDaemon:
             for pending in to_assign:
                 meta = pending.meta
                 guess = guess_metadata_from_path(meta.path)
-                track_number = meta.extra.get("TRACKNUMBER")
+                track_number = meta.extra.get(TRACKNUMBER)
                 if not isinstance(track_number, int):
                     track_number = guess.track_number
-                disc_number = meta.extra.get("DISCNUMBER")
+                disc_number = meta.extra.get(DISCNUMBER)
                 title = meta.title or guess.title or meta.path.stem
                 title_norm = normalize_title_for_match(title)
                 row: list[float] = []
@@ -1909,16 +1817,14 @@ class AudioMetaDaemon:
                     assigned_count += 1
                     assigned_total_score += float(score)
                     release_data.mark_claimed(track.recording_id)
-                    if "TRACKNUMBER" not in to_assign[
+                    if TRACKNUMBER not in to_assign[
                         pending_index
                     ].meta.extra and isinstance(track.number, int):
-                        to_assign[pending_index].meta.extra["TRACKNUMBER"] = (
-                            track.number
-                        )
-                    if "DISCNUMBER" not in to_assign[
+                        to_assign[pending_index].meta.extra[TRACKNUMBER] = track.number
+                    if DISCNUMBER not in to_assign[
                         pending_index
                     ].meta.extra and isinstance(track.disc_number, int):
-                        to_assign[pending_index].meta.extra["DISCNUMBER"] = (
+                        to_assign[pending_index].meta.extra[DISCNUMBER] = (
                             track.disc_number
                         )
             if applied:
@@ -2007,7 +1913,7 @@ class AudioMetaDaemon:
             release_track_total = (
                 track_count or (details and len(details.get("tracklist") or [])) or 0
             )
-            dir_tracks_val = meta.extra.get("TRACK_TOTAL")
+            dir_tracks_val = meta.extra.get(TRACK_TOTAL)
             dir_tracks = None
             if isinstance(dir_tracks_val, str) and dir_tracks_val.isdigit():
                 dir_tracks = int(dir_tracks_val)

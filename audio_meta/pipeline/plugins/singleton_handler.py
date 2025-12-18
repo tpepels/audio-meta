@@ -19,8 +19,9 @@ class DefaultSingletonHandlerPlugin(SingletonHandlerPlugin):
             return None
 
         daemon = ctx.daemon
-        release_key = daemon._release_key(ctx.applied_provider, ctx.applied_release_id)
-        home_dir = daemon._select_singleton_release_home(
+        services = daemon.services
+        release_key = services.release_key(ctx.applied_provider, ctx.applied_release_id)
+        home_dir = services.select_singleton_release_home(
             release_key,
             ctx.directory,
             len(ctx.files),
@@ -30,8 +31,8 @@ class DefaultSingletonHandlerPlugin(SingletonHandlerPlugin):
         if home_dir:
             logger.debug(
                 "Singleton directory %s relocating into %s",
-                daemon._display_path(ctx.directory),
-                daemon._display_path(home_dir),
+                services.display_path(ctx.directory),
+                services.display_path(home_dir),
             )
             ctx.release_home_dir = home_dir
             return home_dir

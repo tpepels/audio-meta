@@ -22,9 +22,9 @@ class TestTrackSkipForcePrompt(unittest.TestCase):
 
             daemon = SimpleNamespace(
                 dry_run_recorder=None,
+                services=SimpleNamespace(safe_stat=lambda p: Path(p).stat()),
                 cache=cache,
                 organizer=SimpleNamespace(enabled=False),
-                _safe_stat=lambda p: Path(p).stat(),
             )
 
             plugin = DefaultTrackSkipPolicyPlugin()

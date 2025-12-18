@@ -111,6 +111,10 @@ def best_assignment_max_score(
         cost.append([max_score - float(dummy_score)] * n)
 
     raw = hungarian_min_cost(cost)
+    # `cost` is padded to a square matrix (n x n). When n_cols > n_rows, `raw` includes
+    # assignments for the extra dummy rows we added. Callers expect one entry per input
+    # row, so drop dummy rows here.
+    raw = raw[:n_rows]
     cleaned: List[Optional[int]] = []
     for _r, c in enumerate(raw):
         if c is None:

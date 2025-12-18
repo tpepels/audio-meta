@@ -23,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover
 from ..config import ProviderSettings
 from ..heuristics import PathGuess, guess_metadata_from_path
 from ..models import TrackMetadata
+from ..meta_keys import MATCH_SOURCE
 from ..cache import MetadataCache
 
 logger = logging.getLogger(__name__)
@@ -363,7 +364,7 @@ class MusicBrainzClient:
                 album_hint=album_hint or dir_release_title,
             )
             meta.extra = before_extra
-            meta.extra["MATCH_SOURCE"] = "acoustid"
+            meta.extra[MATCH_SOURCE] = "acoustid"
             meta.acoustid_id = recording_id
             logger.debug(
                 "Fingerprint matched %s (recording %s score %.2f)",

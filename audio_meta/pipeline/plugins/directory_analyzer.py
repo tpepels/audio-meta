@@ -9,8 +9,9 @@ class DefaultDirectoryAnalyzerPlugin(DirectoryAnalyzerPlugin):
 
     def analyze(self, ctx: DirectoryContext) -> None:
         daemon = ctx.daemon
+        services = daemon.services
         try:
-            count, year = daemon._directory_context(ctx.directory, ctx.files)
+            count, year = services.directory_context(ctx.directory, ctx.files)
         except Exception:
             return
         ctx.dir_track_count = count

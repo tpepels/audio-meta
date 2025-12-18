@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 
 from ..contexts import PlanApplyContext
 from ..protocols import PlanApplyPlugin
@@ -11,6 +12,14 @@ logger = logging.getLogger(__name__)
 
 class DefaultPlanApplyPlugin(PlanApplyPlugin):
     name = "default_plan_apply"
+
+    @staticmethod
+    def _move_path(src, dest) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            src.rename(dest)
+        except OSError:
+            shutil.move(str(src), str(dest))
 
     def apply(self, ctx: PlanApplyContext) -> bool:
         daemon = ctx.daemon
@@ -36,20 +45,40 @@ class DefaultPlanApplyPlugin(PlanApplyPlugin):
         original_path = meta.path
         organized_flag = daemon.organizer.enabled
         try:
+            moved_to = None
             if target_path:
                 daemon.organizer.move(meta, target_path, dry_run=False)
-                daemon.cache.record_move(original_path, target_path)
-                daemon.organizer.cleanup_source_directory(original_path.parent)
+                moved_to = meta.path
+
             if tag_changes:
                 daemon.tag_writer.apply(meta)
                 logger.debug("Updated tags for %s", meta.path)
             else:
                 logger.debug("Tags already up to date for %s", meta.path)
-        except ProcessingError as exc:
-            logger.warning("Failed to update tags for %s: %s", meta.path, exc)
-            return True
 
-        stat_after = daemon._safe_stat(meta.path)
+            # Only record the move after tag application succeeds, so the cache reflects a
+            # fully-applied plan (best-effort; we still attempt rollback on failures).
+            if target_path and moved_to:
+                daemon.cache.record_move(original_path, moved_to)
+                daemon.organizer.cleanup_source_directory(original_path.parent)
+        except ProcessingError as exc:
+            if target_path and meta.path != original_path:
+                try:
+                    self._move_path(meta.path, original_path)
+                    meta.path = original_path
+                    logger.warning(
+                        "Rolled back move for %s after failed tag update", original_path
+                    )
+                except Exception as rollback_exc:  # pragma: no cover
+                    logger.warning(
+                        "Failed to roll back move for %s after error: %s",
+                        original_path,
+                        rollback_exc,
+                    )
+            logger.warning("Failed to update tags for %s: %s", meta.path, exc)
+            return False
+
+        stat_after = daemon.services.safe_stat(meta.path)
         if stat_after:
             daemon.cache.set_processed_file(
                 meta.path,

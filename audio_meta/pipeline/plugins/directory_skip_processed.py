@@ -14,6 +14,7 @@ class ProcessedDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
 
     def should_skip(self, ctx: DirectoryContext) -> Optional[bool]:
         daemon = ctx.daemon
+        services = daemon.services
         if ctx.force_prompt:
             return False
         if not ctx.files:
@@ -21,7 +22,7 @@ class ProcessedDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
         if daemon.dry_run_recorder:
             return False
         for file_path in ctx.files:
-            stat = daemon._safe_stat(file_path)
+            stat = services.safe_stat(file_path)
             if not stat:
                 return False
             cached = daemon.cache.get_processed_file(file_path)
@@ -36,7 +37,7 @@ class ProcessedDirectorySkipPolicyPlugin(DirectorySkipPolicyPlugin):
                 return False
         logger.debug(
             "Skipping %s; directory already processed and organized",
-            daemon._display_path(ctx.directory),
+            services.display_path(ctx.directory),
         )
         ctx.diagnostics.setdefault("skip_reason", "directory_already_processed")
         return True
