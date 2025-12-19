@@ -2033,7 +2033,7 @@ class AudioMetaDaemon:
         if not isinstance(value, str):
             value = str(value)
         if not value:
-            return No
+            return None
         match = re.search(r"(19|20)\d{2}", value)
         if not match:
             return None

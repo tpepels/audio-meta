@@ -20,6 +20,16 @@ from .identity import run_prescan, print_identity_report
 from .daemon import AudioMetaDaemon
 from .providers.validation import validate_providers
 
+LOGO = r"""
+██████╗ ███████╗███████╗ ██████╗ ███╗   ██╗ █████╗ ███╗   ██╗ ██████╗███████╗
+██╔══██╗██╔════╝██╔════╝██╔═══██╗████╗  ██║██╔══██╗████╗  ██║██╔════╝██╔════╝
+██████╔╝█████╗  ███████╗██║   ██║██╔██╗ ██║███████║██╔██╗ ██║██║     █████╗  
+██╔══██╗██╔══╝  ╚════██║██║   ██║██║╚██╗██║██╔══██║██║╚██╗██║██║     ██╔══╝  
+██║  ██║███████╗███████║╚██████╔╝██║ ╚████║██║  ██║██║ ╚████║╚██████╗███████╗
+╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝╚══════╝
+"""
+
+
 LOG_FORMAT = "%(levelname).1s | %(name)s | %(message)s"
 
 C_RESET = "\033[0m"
@@ -179,7 +189,8 @@ def main() -> None:
     args = parser.parse_args()
     config_path = find_config(args.config)
     settings = Settings.load(config_path)
-
+    print(LOGO)
+    print("Resonance — music library curator\n")
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
