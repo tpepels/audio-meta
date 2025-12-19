@@ -46,7 +46,9 @@ from ..tagging import TagWriter
 from ..cache import MetadataCache
 from ..services import AudioMetaServices
 from .. import release_home as release_home_logic
+from ..identity import run_prescan
 from ..directory_identity import normalize_hint_value
+from ..transaction import TransactionManager
 from .. import deferred as deferred_logic
 from .. import release_scoring as release_scoring_logic
 from .. import directory_identity as directory_identity_logic
@@ -121,9 +123,39 @@ class AudioMetaDaemon:
         self.archive_root = settings.organizer.archive_root
         if self.defer_prompts and self.interactive:
             self._sync_deferred_prompts()
+        
+        # Recover any incomplete transactions from previous crashes
+        try:
+            recovered = TransactionManager().recover_incomplete()
+            if recovered:
+                logger.warning("Recovered %d incomplete transactions from previous run", recovered)
+        except Exception as exc:
+            logger.error("Failed to recover incomplete transactions: %s", exc)
+    
+    def _run_prescan(self) -> None:
+        """Run identity pre-scan to build canonical name mappings."""
+        try:
+            logger.info("Running identity pre-scan to build canonical name mappings...")
+            result = run_prescan(
+                self.settings.library,
+                self.cache,
+                verbose=logger.isEnabledFor(logging.DEBUG),
+            )
+            logger.info(
+                "Identity pre-scan complete: %d artists, %d composers, %d album artists, %d conductors, %d performers",
+                len(result.artists),
+                len(result.composers),
+                len(result.album_artists),
+                len(result.conductors),
+                len(result.performers),
+            )
+        except Exception as exc:
+            logger.error("Identity pre-scan failed: %s", exc)
 
     async def run_scan(self) -> None:
         logger.debug("Starting one-off scan")
+        # Run identity pre-scan to build canonical name mappings
+        self._run_prescan()
         for batch in self.scanner.iter_directories():
             await self.queue.put(batch)
         workers = daemon_runtime.start_workers(self)
@@ -2001,7 +2033,7 @@ class AudioMetaDaemon:
         if not isinstance(value, str):
             value = str(value)
         if not value:
-            return None
+            return No
         match = re.search(r"(19|20)\d{2}", value)
         if not match:
             return None

@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from .transaction import Transaction
+from .validation import MetadataValidator
+
 from mutagen.id3 import (
     ID3,
     ID3NoHeaderError,
@@ -30,7 +33,17 @@ class TagWriter:
 
     SUPPORTED_EXTS = {".mp3", ".flac", ".m4a"}
 
-    def apply(self, meta: TrackMetadata) -> None:
+    def apply(self, meta: TrackMetadata, use_transaction: bool = True) -> None:
+        """
+        Apply metadata tags to file.
+        
+        Args:
+            meta: Metadata to apply
+            use_transaction: If True, wraps in transaction with rollback capability
+        """
+        # Validate metadata before applying
+        self._validate_metadata(meta)
+        
         handlers = {
             ".mp3": self._apply_mp3,
             ".flac": self._apply_flac,
@@ -41,7 +54,45 @@ class TagWriter:
         if not handler:
             logger.debug("Skipping unsupported extension %s", meta.path)
             return
-        handler(meta)
+        
+        if use_transaction:
+            # Wrap in transaction for rollback capability
+            with Transaction() as txn:
+                txn.tag_write(meta.path, lambda: handler(meta))
+        else:
+            handler(meta)
+    
+    def _validate_metadata(self, meta: TrackMetadata) -> None:
+        """Validate metadata before writing to ensure data quality."""
+        if meta.artist:
+            result = MetadataValidator.validate_artist(meta.artist)
+            if not result.valid:
+                logger.warning("Invalid artist '%s': %s", meta.artist, result.errors)
+                meta.artist = result.sanitized_value
+        
+        if meta.album:
+            result = MetadataValidator.validate_album(meta.album)
+            if not result.valid:
+                logger.warning("Invalid album '%s': %s", meta.album, result.errors)
+            meta.album = result.sanitized_value
+        
+        if meta.title:
+            result = MetadataValidator.validate_title(meta.title)
+            if not result.valid:
+                raise ValueError(f"Invalid title: {result.errors}")
+            meta.title = result.sanitized_value
+        
+        if meta.track_number is not None:
+            result = MetadataValidator.validate_track_number(meta.track_number)
+            if not result.valid:
+                logger.warning("Invalid track number %s: %s", meta.track_number, result.errors)
+            meta.track_number = result.sanitized_value
+        
+        if meta.disc_number is not None:
+            result = MetadataValidator.validate_disc_number(meta.disc_number)
+            if not result.valid:
+                logger.warning("Invalid disc number %s: %s", meta.disc_number, result.errors)
+            meta.disc_number = result.sanitized_value
 
     def has_changes(self, meta: TrackMetadata) -> bool:
         return bool(self.diff(meta))

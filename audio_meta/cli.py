@@ -15,6 +15,8 @@ from .commands import export_testcase as cmd_export_testcase
 from .commands import rollback as cmd_rollback
 from .commands import singletons as cmd_singletons
 from .config import Settings, find_config
+from .determinism import generate_stability_report, print_stability_report
+from .identity import run_prescan, print_identity_report
 from .daemon import AudioMetaDaemon
 from .providers.validation import validate_providers
 
@@ -174,7 +176,6 @@ def main() -> None:
         default=None,
         help="Optional expected release key (e.g. musicbrainz:<id> or discogs:<id>)",
     )
-
     args = parser.parse_args()
     config_path = find_config(args.config)
     settings = Settings.load(config_path)

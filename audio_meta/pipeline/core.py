@@ -28,6 +28,7 @@ from .plugins.candidates_musicbrainz import MusicBrainzCandidateSourcePlugin
 from .plugins.directory_analyzer import DefaultDirectoryAnalyzerPlugin
 from .plugins.directory_initializer import DefaultDirectoryInitializerPlugin
 from .plugins.directory_skip import DefaultDirectorySkipPolicyPlugin
+from .plugins.identity_canonicalizer import IdentityCanonicalizePlugin
 from .plugins.plan_apply import DefaultPlanApplyPlugin
 from .plugins.no_candidate_manual_selection import NoCandidateManualSelectionPlugin
 from .plugins.release_decision import DefaultReleaseDecisionPlugin
@@ -41,6 +42,8 @@ from .plugins.plan_transform_singleton_target import SingletonTargetOverridePlug
 from .plugins.directory_skip_processed import ProcessedDirectorySkipPolicyPlugin
 from .plugins.directory_audit import DirectoryAuditPlugin
 from .plugins.singleton_handler import DefaultSingletonHandlerPlugin
+from .plugins.singleton_resolver import UnifiedSingletonResolverPlugin
+from .plugins.determinism_enforcer import DeterminismEnforcerPlugin
 from .plugins.track_skip import DefaultTrackSkipPolicyPlugin
 from .plugins.signal_extractor import DefaultSignalExtractorPlugin
 from .plugins.track_assignment import DefaultTrackAssignmentPlugin
@@ -298,12 +301,15 @@ class ProcessingPipeline:
         _append(self._candidate_sources, DiscogsCandidateSourcePlugin())
         _append(self._signal_extractors, DefaultSignalExtractorPlugin())
         _append(self._directory_initializers, DefaultDirectoryInitializerPlugin())
+        _append(self._directory_initializers, IdentityCanonicalizePlugin())
         _append(self._directory_skip_policies, ProcessedDirectorySkipPolicyPlugin())
         _append(self._directory_skip_policies, DefaultDirectorySkipPolicyPlugin())
         _append(self._directory_analyzers, DefaultDirectoryAnalyzerPlugin())
         _append(self._track_skip_policies, DefaultTrackSkipPolicyPlugin())
         _append(self._planners, DefaultPlannerPlugin())
+        _append(self._singleton_handlers, UnifiedSingletonResolverPlugin())
         _append(self._singleton_handlers, DefaultSingletonHandlerPlugin())
+        _append(self._directory_finalizers, DeterminismEnforcerPlugin())
         _append(self._directory_finalizers, DefaultDirectoryFinalizePlugin())
         _append(self._directory_diagnostics, DefaultDirectoryDiagnosticsPlugin())
         _append(self._directory_diagnostics, DirectoryAuditPlugin())

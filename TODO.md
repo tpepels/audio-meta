@@ -1,9 +1,14 @@
-[] Do a pre-run to determine the canonical names of each individual artist and composer to avoid directories and meta tags with divergent spellings
-[] Check discogs during singleton runs for Single releases and determine a match.
-[] If only 1 suggestion during defferred user input then try to determine whether this is the correct match on different criteria
+### ARCHITECTURE NOTES:
 
-[] When looking at singletons, if they have a track number in their filename and/or meta information, they must be accidentally left somewhere. Then have to look at artist/composer information to figure out which album/relase ON DISK has a missing corresponding track. This could be more than 1 directory, but that's unlikely. In any case this is what then should be presented and asked from the user.
+__Current State:__
 
-[] Also during singleton checking, we should use the fingerprint to determine likely releases. 
+- Daemon god class acknowledged (1,400+ lines)
+- Integrations complete but not refactored
+- System works but could be more maintainable
 
-[] I think that singleton matching should also make use of the pipeline but in a slightly different workflow, i.e. to find out where they belong. Couldn't we write plugins for them too and map a custom pipeline? Then we can use MB and DG to figure out what the problem is. In many cases I see a track number, so it was originally misplaced. Then it turns out that the release that they belonged to was moved without them (i.e. they're home alone's kevins).
+__Recommended Next Steps (Future Work):__
+
+1. Extract focused service classes from daemon
+2. Implement proper dependency injection
+3. Add unit tests for new systems
+4. Continue SOLID refactoring incrementally
