@@ -28,9 +28,9 @@ from ..heuristics import PathGuess, guess_metadata_from_path
 from ..models import TrackMetadata
 from ..cache import MetadataCache
 
-# Import LookupResult from the new musicbrainz package to avoid duplication
-# Since we now have both musicbrainz.py (this file) and musicbrainz/ (package),
-# Python prioritizes the package, so we import from there
+# Import LookupResult from the musicbrainz package
+# This file was renamed from musicbrainz.py to musicbrainz_client.py to avoid
+# package/module name conflict with the musicbrainz/ package
 from .musicbrainz import LookupResult
 
 logger = logging.getLogger(__name__)

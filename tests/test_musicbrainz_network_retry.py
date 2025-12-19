@@ -43,7 +43,7 @@ class TestMusicBrainzNetworkRetry(unittest.TestCase):
             meta = TrackMetadata(path=path, duration_seconds=1)
 
             with (
-                patch("audio_meta.providers.musicbrainz.musicbrainzngs", _MBStub),
+                patch("audio_meta.providers.musicbrainz_client.musicbrainzngs", _MBStub),
                 patch.object(MusicBrainzClient, "_fingerprint", return_value=(None, None)),
                 patch.object(
                     MusicBrainzClient,
@@ -90,7 +90,7 @@ class TestMusicBrainzNetworkRetry(unittest.TestCase):
             meta = TrackMetadata(path=path, duration_seconds=1)
 
             with (
-                patch("audio_meta.providers.musicbrainz.musicbrainzngs", _MBStub),
+                patch("audio_meta.providers.musicbrainz_client.musicbrainzngs", _MBStub),
                 patch.object(MusicBrainzClient, "_fingerprint", return_value=(None, None)),
                 patch.object(
                     MusicBrainzClient,
