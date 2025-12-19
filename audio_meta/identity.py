@@ -1,6 +1,9 @@
 """
 Improved identity canonicalization for artists and composers.
 
+This module provides backward compatibility by importing some classes from the new
+core.identity layer while keeping library-specific scanning logic.
+
 Fixes:
 1. Properly handles comma-separated artist names
 2. Better canonical name selection
@@ -21,10 +24,22 @@ from mutagen.id3 import ID3
 from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
+# Import canonicalizer from the new core.identity layer
+from .core.identity import IdentityCanonicalizer
 from .cache import MetadataCache
 from .config import LibrarySettings
 
 logger = logging.getLogger(__name__)
+
+# Export classes for backward compatibility
+__all__ = [
+    "IdentityCluster",
+    "IdentityScanResult",
+    "IdentityScanner",
+    "IdentityCanonicalizer",
+    "run_prescan",
+    "print_identity_report",
+]
 
 
 @dataclass
@@ -34,7 +49,7 @@ class IdentityCluster:
     canonical_id: str  # Unique identifier
     variants: set[str] = field(default_factory=set)
     occurrences: int = 0
-    
+
     def add_variant(self, name: str) -> None:
         self.variants.add(name)
         self.occurrences += 1
@@ -49,7 +64,7 @@ class IdentityScanResult:
     conductors: dict[str, IdentityCluster] = field(default_factory=dict)
     performers: dict[str, IdentityCluster] = field(default_factory=dict)
     total_files: int = 0
-    
+
     @property
     def all_people(self) -> dict[str, dict[str, IdentityCluster]]:
         return {
@@ -538,109 +553,12 @@ class IdentityScanner:
         
         # Remove spaces for final token (but we kept them to preserve word boundaries)
         token = ascii_only.replace(" ", "")
-        
+
         return token if token else ""
 
 
-class IdentityCanonicalizer:
-    """
-    Applies canonical identity mappings during metadata processing.
-    """
-    
-    def __init__(self, cache: MetadataCache) -> None:
-        self.cache = cache
-        self._local_cache: dict[str, str] = {}
-    
-    def apply_scan_results(self, result: IdentityScanResult) -> int:
-        """
-        Persist scan results to the cache for use during matching.
-        
-        Returns the number of canonical mappings created.
-        """
-        count = 0
-        
-        for category, clusters in result.all_people.items():
-            for token, cluster in clusters.items():
-                # Use the canonical_id as the key (ensures uniqueness)
-                cache_key = cluster.canonical_id
-                
-                # Store the user-friendly canonical name
-                self.cache.set_canonical_name(cache_key, cluster.canonical)
-                count += 1
-                
-                # Store all variants that map to this canonical
-                for variant in cluster.variants:
-                    variant_token = IdentityScanner._normalize_token(variant)
-                    if variant_token and variant_token != token:
-                        variant_key = f"{category}::{variant_token}"
-                        self.cache.set_canonical_name(variant_key, cluster.canonical)
-                        count += 1
-        
-        logger.info("Persisted %d canonical identity mappings to cache", count)
-        return count
-    
-    def canonicalize(self, name: str, category: str = "artist") -> str:
-        """
-        Get the canonical form of a name.
-        
-        Args:
-            name: The name to canonicalize
-            category: One of 'artist', 'composer', 'album_artist', 'conductor', 'performer'
-            
-        Returns:
-            The canonical form, or the original name if no mapping exists
-        """
-        if not name:
-            return name
-        
-        # Strip whitespace
-        name = name.strip()
-        
-        token = IdentityScanner._normalize_token(name)
-        if not token:
-            return name
-        
-        cache_key = f"{category}::{token}"
-        
-        # Check local cache first
-        if cache_key in self._local_cache:
-            return self._local_cache[cache_key]
-        
-        # Check persistent cache
-        canonical = self.cache.get_canonical_name(cache_key)
-        if canonical:
-            self._local_cache[cache_key] = canonical
-            return canonical
-        
-        return name
-    
-    def canonicalize_multi(self, names: str, category: str = "artist") -> str:
-        """
-        Canonicalize a potentially multi-name string.
-        
-        FIXED: Now properly returns individual names separated by "; " (NOT commas).
-        """
-        if not names:
-            return names
-        
-        # Split using the same logic as scanner
-        scanner = IdentityScanner(LibrarySettings(roots=[]), None)
-        parts = scanner._split_names(names)
-        
-        canonical_parts = []
-        seen = set()
-        
-        for part in parts:
-            if part:
-                canonical = self.canonicalize(part, category)
-                # Avoid duplicates
-                canonical_lower = canonical.lower()
-                if canonical_lower not in seen:
-                    canonical_parts.append(canonical)
-                    seen.add(canonical_lower)
-        
-        # Always use semicolon as separator (NEVER comma)
-        return "; ".join(canonical_parts) if canonical_parts else names
+# Note: IdentityCanonicalizer is now imported from core.identity above
+# The implementation has been moved to audio_meta/core/identity/canonicalizer.py
 
 
 def run_prescan(

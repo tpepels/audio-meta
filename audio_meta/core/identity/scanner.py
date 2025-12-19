@@ -160,11 +160,17 @@ class IdentityScanner:
         1. Proper case (not all caps or all lowercase)
         2. Frequency (most common variant)
         3. No comma (avoid "Last, First" format)
-        4. Word count (prefer fuller names)
-        5. Character count (prefer longer names)
+        4. Fewer words (prefer individual artists over groups/ensembles)
+        5. Shorter length (prefer "Bill Evans" over "Bill Evans Trio")
 
         Special handling:
         - If best match is "Last, First" and "First Last" exists, use "First Last"
+        - Prefer shorter artist names (individual over ensemble)
+
+        Examples:
+            ["Bill Evans", "Bill Evans Trio"] → "Bill Evans"
+            ["Oscar Peterson", "Dizzy Gillespie Quintet"] → "Oscar Peterson"
+            ["J.S. Bach", "Johann Sebastian Bach"] → "Johann Sebastian Bach" (longer wins for initials)
 
         Args:
             variants: List of name variants
@@ -182,17 +188,32 @@ class IdentityScanner:
 
         unique = list(counts.keys())
 
+        # Detect if we have initials vs full name (special case)
+        # Example: "J.S. Bach" vs "Johann Sebastian Bach"
+        has_initials = any("." in name or len(name.split()) > 1 and all(len(w) <= 2 for w in name.split()[:-1]) for name in unique)
+        has_full_name = any(len(word) > 2 for name in unique for word in name.split())
+
         def score(name: str) -> tuple:
             # Calculate scoring factors
             frequency = counts[name]
             is_all_caps = 1 if name.isupper() else 0
             is_all_lower = 1 if name.islower() else 0
             has_proper_case = 1 if not is_all_caps and not is_all_lower else 0
-            word_count = len([p for p in name.split() if p])
+            words = [p for p in name.split() if p]
+            word_count = len(words)
             char_count = len(name)
 
             # Prefer "First Last" over "Last, First" format
             has_comma_space = 1 if ", " in name else 0
+
+            # Check if this looks like initials (e.g., "J.S. Bach")
+            is_initials = "." in name or (word_count > 1 and all(len(w) <= 2 for w in words[:-1]))
+
+            # Special case: If we have both initials and full names, prefer full name
+            if has_initials and has_full_name and is_initials:
+                prefer_full = 1
+            else:
+                prefer_full = 0
 
             # Return tuple for sorting (lower is better)
             return (
@@ -201,8 +222,9 @@ class IdentityScanner:
                 has_comma_space,  # Avoid "Last, First"
                 is_all_caps,  # Avoid all caps
                 is_all_lower,  # Avoid all lowercase
-                -word_count,  # Prefer more words
-                -char_count,  # Prefer longer
+                prefer_full,  # Prefer full name over initials
+                word_count,  # Prefer fewer words (individual over ensemble)
+                char_count,  # Prefer shorter (individual over ensemble)
                 name.casefold(),  # Alphabetical tiebreaker
             )
 
