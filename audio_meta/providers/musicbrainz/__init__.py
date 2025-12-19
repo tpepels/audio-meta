@@ -9,11 +9,19 @@ This package contains MusicBrainz integrations:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ...models import TrackMetadata
+
 # Re-export LookupResult for backward compatibility
-# The main MusicBrainz client is in audio_meta.providers.musicbrainz (the .py file)
-# This package (musicbrainz/) is for new modular components like identity_resolver
-try:
-    from ..musicbrainz import LookupResult
-    __all__ = ["LookupResult"]
-except ImportError:
-    __all__ = []
+# This used to be in the old musicbrainz.py file, but now we define it here
+# to avoid circular imports since both the old .py file and this new package exist
+@dataclass(slots=True)
+class LookupResult:
+    """Result from a MusicBrainz track lookup."""
+    track: "TrackMetadata"
+    score: float
+
+__all__ = ["LookupResult"]

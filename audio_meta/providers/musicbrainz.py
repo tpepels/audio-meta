@@ -28,13 +28,12 @@ from ..heuristics import PathGuess, guess_metadata_from_path
 from ..models import TrackMetadata
 from ..cache import MetadataCache
 
+# Import LookupResult from the new musicbrainz package to avoid duplication
+# Since we now have both musicbrainz.py (this file) and musicbrainz/ (package),
+# Python prioritizes the package, so we import from there
+from .musicbrainz import LookupResult
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class LookupResult:
-    track: TrackMetadata
-    score: float
 
 
 @dataclass(slots=True)
