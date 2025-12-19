@@ -263,8 +263,34 @@ class Organizer:
         if not source:
             guess = guess_metadata_from_path(meta.path)
             return guess.artist
+
+        # Split on semicolons and commas
         parts = [part.strip() for part in re.split(r"[;,]+", source) if part.strip()]
-        return parts[0] if parts else source
+
+        if not parts:
+            return source
+
+        # If there's only one part, use it
+        if len(parts) == 1:
+            return parts[0]
+
+        # For multiple artists, prefer groups/ensembles over individuals
+        # Common ensemble indicators (case-insensitive)
+        ensemble_keywords = {
+            'quartet', 'quintet', 'sextet', 'septet', 'octet',
+            'trio', 'duo', 'ensemble', 'orchestra', 'philharmonic',
+            'symphony', 'chamber', 'band', 'choir', 'chorus',
+            'consort', 'collective', 'group'
+        }
+
+        for part in parts:
+            part_lower = part.lower()
+            if any(keyword in part_lower for keyword in ensemble_keywords):
+                return part
+
+        # If no ensemble found, prefer the last artist (often the main performer)
+        # This handles cases like "Composer, Main Performer"
+        return parts[-1]
 
     def _is_under_library(self, path: Path) -> bool:
         for root in self.library_roots:
@@ -317,6 +343,14 @@ class Organizer:
         token = self._canonical_token(label_type, parent, normalized)
         cached = (
             self.cache.get_canonical_name(token) if (self.cache and token) else None
+        )
+        if cached:
+            return cached
+
+        # Try identity scanner format (category::normalized)
+        identity_token = f"{label_type}::{normalized}"
+        cached = (
+            self.cache.get_canonical_name(identity_token) if self.cache else None
         )
         if cached:
             return cached

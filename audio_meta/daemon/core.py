@@ -44,7 +44,13 @@ from ..providers.musicbrainz import (
 from ..scanner import DirectoryBatch, LibraryScanner
 from ..tagging import TagWriter
 from ..cache import MetadataCache
-from ..services import AudioMetaServices
+from ..services import (
+    AudioMetaServices,
+    ClassicalMusicService,
+    DirectoryIdentityService,
+    ReleaseMatchingService,
+    TrackAssignmentService,
+)
 from .. import release_home as release_home_logic
 from ..identity import run_prescan
 from ..directory_identity import normalize_hint_value
@@ -97,6 +103,23 @@ class AudioMetaDaemon:
             disabled_plugins=set(settings.daemon.pipeline_disable),
             plugin_order=dict(settings.daemon.pipeline_order),
         )
+
+        # Initialize refactored services
+        self.release_matching = ReleaseMatchingService(
+            cache=self.cache,
+            musicbrainz=self.musicbrainz,
+            discogs=self.discogs,
+            count_audio_files_fn=self._count_audio_files,
+        )
+        self.track_assignment = TrackAssignmentService(
+            musicbrainz=self.musicbrainz,
+            discogs=self.discogs,
+        )
+        self.classical_music = ClassicalMusicService(
+            heuristics=self.heuristics,
+            settings=self.settings,
+        )
+        self.directory_identity = DirectoryIdentityService()
         self.queue: asyncio.Queue[DirectoryBatch] = asyncio.Queue()
         self.observer: object | None = None
         self.dry_run_recorder = (
@@ -459,77 +482,10 @@ class AudioMetaDaemon:
         return False
 
     def _should_review_classical_credits(self, metas: list[TrackMetadata]) -> bool:
-        min_tracks = int(
-            getattr(self.settings.daemon, "classical_credits_min_tracks", 3) or 3
-        )
-        min_coverage = float(
-            getattr(self.settings.daemon, "classical_credits_min_coverage", 0.6) or 0.6
-        )
-        min_consensus = float(
-            getattr(self.settings.daemon, "classical_credits_min_consensus", 0.7) or 0.7
-        )
-
-        stats = self._classical_credits_stats(metas)
-        if stats["classical_tracks"] < min_tracks:
-            return False
-        if stats["coverage"] < min_coverage:
-            return True
-        if stats["hinted_tracks"] < min_tracks:
-            return True
-        if stats["consensus"] is None:
-            return True
-        return stats["consensus"] < min_consensus
+        return self.classical_music.should_review_credits(metas)
 
     def _classical_credits_stats(self, metas: list[TrackMetadata]) -> dict[str, object]:
-        classical = [m for m in metas if self.heuristics.evaluate(m).is_classical]
-        hints: list[str] = []
-        missing = 0
-        for meta in classical:
-            parts: list[str] = []
-            if meta.performers:
-                parts.extend(meta.performers)
-            if meta.album_artist and meta.album_artist != meta.composer:
-                parts.append(meta.album_artist)
-            elif meta.artist and meta.artist != meta.composer:
-                parts.append(meta.artist)
-            if meta.conductor and meta.conductor != meta.composer:
-                parts.append(meta.conductor)
-            unique: list[str] = []
-            for value in parts:
-                for token in self.heuristics._split_artist_tokens(value):
-                    if token and token not in unique and token != meta.composer:
-                        unique.append(token)
-            if not unique:
-                missing += 1
-                continue
-            hints.append("; ".join(unique))
-
-        coverage = (len(hints) / len(classical)) if classical else 1.0
-        counts: dict[str, int] = {}
-        canonical_to_display: dict[str, str] = {}
-        for hint in hints:
-            canonical = normalize_hint_value(hint)
-            if not canonical:
-                continue
-            counts[canonical] = counts.get(canonical, 0) + 1
-            canonical_to_display.setdefault(canonical, hint)
-        top = sorted(
-            ((canonical_to_display[k], v) for k, v in counts.items()),
-            key=lambda kv: kv[1],
-            reverse=True,
-        )
-        consensus = None
-        if hints and counts:
-            best = max(counts.values())
-            consensus = best / len(hints)
-        return {
-            "classical_tracks": len(classical),
-            "hinted_tracks": len(hints),
-            "missing_hints": missing,
-            "coverage": float(coverage),
-            "consensus": consensus,
-            "top_hints": top[:5],
-        }
+        return self.classical_music.calculate_credits_stats(metas)
 
     def _confirm_classical_credits(
         self, directory: Path, metas: list[TrackMetadata]
@@ -569,33 +525,9 @@ class AudioMetaDaemon:
         current_dir: Path,
         current_count: int,
     ) -> Optional[Path]:
-        if not release_id:
-            return None
-        cached_key = self._release_key("musicbrainz", release_id)
-        cached_home = self.cache.get_release_home(cached_key)
-        if cached_home:
-            raw_path, _, cached_hash = cached_home
-            candidate = Path(raw_path)
-            if candidate.exists() and candidate != current_dir:
-                current_hash = self.cache.get_directory_hash(candidate)
-                if cached_hash and current_hash and cached_hash != current_hash:
-                    self.cache.delete_release_home(cached_key)
-                else:
-                    return candidate
-            elif not candidate.exists():
-                self.cache.delete_release_home(cached_key)
-        candidates = self.cache.find_directories_for_release(release_id)
-        best_dir: Optional[Path] = None
-        best_count = current_count
-        for raw in candidates:
-            candidate = Path(raw)
-            if candidate == current_dir or not candidate.exists():
-                continue
-            count = self._count_audio_files(candidate)
-            if count > best_count:
-                best_dir = candidate
-                best_count = count
-        return best_dir
+        return self.release_matching.find_release_home(
+            release_id, current_dir, current_count
+        )
 
     def _maybe_set_release_home(
         self,
@@ -796,27 +728,9 @@ class AudioMetaDaemon:
         release_examples: dict[str, ReleaseExample],
         discogs_details: dict[str, dict],
     ) -> Optional[str]:
-        signatures: dict[str, tuple[int, tuple[tuple[str, Optional[int]], ...]]] = {}
-        for key, _ in candidates:
-            signature = self._canonical_release_signature(
-                key, release_examples, discogs_details
-            )
-            if signature is None:
-                return None
-            signatures[key] = signature
-        iterator = iter(signatures.values())
-        try:
-            first_signature = next(iterator)
-        except StopIteration:
-            return None
-        if not all(sig == first_signature for sig in iterator):
-            return None
-        priority = {"musicbrainz": 0, "discogs": 1}
-        best_key = min(
-            signatures.keys(),
-            key=lambda key: (priority.get(self._split_release_key(key)[0], 99), key),
+        return self.release_matching.auto_pick_equivalent_release(
+            candidates, release_examples, discogs_details
         )
-        return best_key
 
     def _auto_pick_existing_release_home(
         self,
@@ -825,27 +739,9 @@ class AudioMetaDaemon:
         current_count: int,
         release_examples: dict[str, ReleaseExample],
     ) -> Optional[str]:
-        best_key: Optional[str] = None
-        best_rank: Optional[tuple[int, int, float, int, str]] = None
-        for key, score in candidates:
-            provider, release_id = self._split_release_key(key)
-            if provider != "musicbrainz" or not release_id:
-                continue
-            release_key = self._release_key(provider, release_id)
-            release_home, home_count = self._release_home_for_key(
-                release_key, directory, current_count
-            )
-            if not release_home or home_count <= 0:
-                continue
-            example = release_examples.get(key)
-            track_total = example.track_total if example else None
-            fit = abs(track_total - home_count) if track_total else 10_000
-            provider_priority = 0 if provider == "musicbrainz" else 1
-            rank = (home_count, -fit, float(score), -provider_priority, key)
-            if best_rank is None or rank > best_rank:
-                best_rank = rank
-                best_key = key
-        return best_key
+        return self.release_matching.auto_pick_existing_release_home(
+            candidates, directory, current_count, release_examples
+        )
 
     def _release_home_for_key(
         self,
@@ -853,27 +749,9 @@ class AudioMetaDaemon:
         current_dir: Path,
         current_count: int,
     ) -> tuple[Optional[Path], int]:
-        cached_home = self.cache.get_release_home(release_key)
-        if cached_home:
-            raw_path, cached_count, cached_hash = cached_home
-            candidate = Path(raw_path)
-            if candidate.exists() and candidate != current_dir:
-                current_hash = self.cache.get_directory_hash(candidate)
-                if cached_hash and current_hash and cached_hash != current_hash:
-                    self.cache.delete_release_home(release_key)
-                else:
-                    return candidate, int(
-                        cached_count or self._count_audio_files(candidate)
-                    )
-            elif not candidate.exists():
-                self.cache.delete_release_home(release_key)
-        provider, plain = self._split_release_key(release_key)
-        if provider != "musicbrainz":
-            return None, 0
-        fallback = self._find_release_home(plain, current_dir, current_count)
-        if not fallback:
-            return None, 0
-        return fallback, self._count_audio_files(fallback)
+        return self.release_matching._release_home_for_key(
+            release_key, current_dir, current_count
+        )
 
     def _canonical_release_signature(
         self,
@@ -881,15 +759,9 @@ class AudioMetaDaemon:
         release_examples: dict[str, ReleaseExample],
         discogs_details: dict[str, dict],
     ) -> Optional[tuple[int, tuple[tuple[str, Optional[int]], ...]]]:
-        entries = self._release_track_entries(key, release_examples, discogs_details)
-        if not entries:
-            return None
-        normalized = []
-        for title, duration in entries:
-            if not title:
-                return None
-            normalized.append((title, duration))
-        return len(normalized), tuple(normalized)
+        return self.release_matching.canonical_release_signature(
+            key, release_examples, discogs_details
+        )
 
     def _release_track_entries(
         self,
@@ -897,71 +769,14 @@ class AudioMetaDaemon:
         release_examples: dict[str, ReleaseExample],
         discogs_details: dict[str, dict],
     ) -> Optional[list[tuple[str, Optional[int]]]]:
-        provider, release_id = self._split_release_key(key)
-        if provider == "musicbrainz":
-            release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-            if not release_data:
-                release_data = self.musicbrainz._fetch_release_tracks(release_id)
-                if release_data:
-                    self.musicbrainz.release_tracker.releases[release_id] = release_data
-            if not release_data or not release_data.tracks:
-                return None
-            entries: list[tuple[str, Optional[int]]] = []
-            for track in release_data.tracks:
-                if not track.title:
-                    return None
-                entries.append(
-                    (normalize_match_text(track.title), track.duration_seconds)
-                )
-            return entries
-        if provider == "discogs":
-            details = discogs_details.get(key)
-            if not details and self.discogs:
-                try:
-                    details = self.discogs.get_release(int(release_id))
-                except (ValueError, TypeError):
-                    details = None
-                if details:
-                    discogs_details[key] = details
-            if not details:
-                return None
-            tracklist = details.get("tracklist") or []
-            entries = []
-            for track in tracklist:
-                if track.get("type_", "track") not in (None, "", "track"):
-                    continue
-                title = track.get("title")
-                if not title:
-                    return None
-                entries.append(
-                    (
-                        normalize_match_text(title),
-                        parse_discogs_duration(track.get("duration")),
-                    )
-                )
-            return entries or None
-        return None
+        return self.release_matching._release_track_entries(
+            key, release_examples, discogs_details
+        )
 
     def _match_pending_to_release(
         self, meta: TrackMetadata, release: ReleaseData
     ) -> Optional[float]:
-        title = meta.title or guess_metadata_from_path(meta.path).title
-        duration = meta.duration_seconds
-        if duration is None:
-            duration = self.musicbrainz._probe_duration(meta.path)
-            if duration:
-                meta.duration_seconds = duration
-        best = 0.0
-        for track in release.tracks:
-            combined = combine_similarity(
-                title_similarity(title, track.title),
-                duration_similarity(duration, track.duration_seconds),
-            )
-            if combined is not None and combined > best:
-                best = combined
-        if best <= 0.0:
-            return None
-        return best
+        return self.release_matching.match_pending_to_release(meta, release)
 
     def _log_unmatched_candidates(
         self,
@@ -1445,86 +1260,7 @@ class AudioMetaDaemon:
     ) -> None:
         if not self.discogs:
             return
-        tracklist = release_details.get("tracklist") or []
-        tracks = [
-            t for t in tracklist if t.get("type_", "track") in (None, "", "track")
-        ]
-        if not tracks:
-            for pending in pending_results:
-                self.discogs.apply_release_details(
-                    pending.meta, release_details, allow_overwrite=True
-                )
-                score = pending.meta.match_confidence or 0.4
-                pending.meta.match_confidence = score
-                pending.result = LookupResult(pending.meta, score=score)
-                pending.matched = True
-            return
-
-        assignment_scores: list[list[float]] = []
-        for pending in pending_results:
-            meta = pending.meta
-            if not meta.duration_seconds:
-                duration = self.musicbrainz._probe_duration(meta.path)
-                if duration:
-                    meta.duration_seconds = duration
-            guess = guess_metadata_from_path(meta.path)
-            track_number = meta.track_number or guess.track_number
-            title = meta.title or guess.title or meta.path.stem
-            title_norm = normalize_title_for_match(title) or title
-            row: list[float] = []
-            for track in tracks:
-                score = 0.0
-                position = track.get("position")
-                pos_num = (
-                    self.discogs._parse_track_number(position)
-                    if isinstance(position, str)
-                    else None
-                )
-                if isinstance(track_number, int) and pos_num:
-                    diff = abs(pos_num - track_number)
-                    if diff == 0:
-                        score += 0.6
-                    elif diff == 1:
-                        score += 0.25
-                    elif diff == 2:
-                        score += 0.1
-                if track.get("title"):
-                    ratio = title_similarity(title_norm, track.get("title")) or 0.0
-                    score += 0.3 * ratio
-                dur = parse_discogs_duration(track.get("duration"))
-                dur_ratio = duration_similarity(meta.duration_seconds, dur)
-                if dur_ratio is not None:
-                    score += 0.1 * dur_ratio
-                row.append(max(0.0, min(1.0, score)))
-            assignment_scores.append(row)
-
-        assignment = best_assignment_max_score(assignment_scores, dummy_score=0.55)
-        for pending_index, track_index in enumerate(assignment):
-            pending = pending_results[pending_index]
-            if track_index is None or track_index >= len(tracks):
-                continue
-            score = assignment_scores[pending_index][track_index]
-            if score < 0.58:
-                continue
-            track = tracks[track_index]
-            self.discogs.apply_release_details_matched(
-                pending.meta, release_details, track, allow_overwrite=True
-            )
-            position = track.get("position")
-            if pending.meta.track_number is None and isinstance(position, str):
-                pos_num = self.discogs._parse_track_number(position)
-                if isinstance(pos_num, int):
-                    pending.meta.track_number = pos_num
-            pending.meta.match_confidence = max(
-                pending.meta.match_confidence or 0.0, 0.35 + score * 0.3
-            )
-            pending.result = LookupResult(
-                pending.meta,
-                score=max(
-                    pending.result.score if pending.result else 0.0, 0.35 + score * 0.3
-                ),
-            )
-            pending.matched = True
+        self.track_assignment.assign_discogs_tracks(pending_results, release_details)
 
     def _apply_musicbrainz_release_selection(
         self,
@@ -1533,138 +1269,37 @@ class AudioMetaDaemon:
         pending_results: list[PendingResult],
         force: bool = False,
     ) -> bool:
-        self.musicbrainz.release_tracker.register(
-            directory,
-            release_id,
-            self.musicbrainz._fetch_release_tracks,
+        applied, assigned_count, avg = self.track_assignment.assign_musicbrainz_tracks(
+            directory, release_id, pending_results, force
         )
-        self.musicbrainz.release_tracker.remember_release(directory, release_id, 1.0)
-        release_data = self.musicbrainz.release_tracker.releases.get(release_id)
-        if not release_data:
-            return False
-        if force:
-            release_data.claimed.clear()
-        applied = False
-        to_assign: list[PendingResult] = []
-        for pending in pending_results:
-            if pending.matched and not force:
-                applied = True
-                continue
-            if force:
-                pending.matched = False
-            if not pending.meta.duration_seconds:
-                duration = self.musicbrainz._probe_duration(pending.meta.path)
-                if duration:
-                    pending.meta.duration_seconds = duration
-            to_assign.append(pending)
 
-        if to_assign:
-            assigned_count = 0
-            assigned_total_score = 0.0
-            assignment_scores: list[list[float]] = []
-            tracks = list(release_data.tracks or [])
-            for pending in to_assign:
-                meta = pending.meta
-                guess = guess_metadata_from_path(meta.path)
-                track_number = meta.track_number or guess.track_number
-                disc_number = meta.disc_number
-                title = meta.title or guess.title or meta.path.stem
-                title_norm = normalize_title_for_match(title)
-                row: list[float] = []
-                for track in tracks:
-                    if (
-                        meta.musicbrainz_track_id
-                        and track.recording_id
-                        and meta.musicbrainz_track_id == track.recording_id
-                    ):
-                        row.append(1.0)
-                        continue
-                    score = 0.0
-                    if isinstance(track_number, int) and track.number:
-                        diff = abs(track.number - track_number)
-                        if diff == 0:
-                            score += 0.62
-                        elif diff == 1:
-                            score += 0.28
-                        elif diff == 2:
-                            score += 0.12
-                    if isinstance(disc_number, int) and track.disc_number:
-                        if disc_number == track.disc_number:
-                            score += 0.08
-                        else:
-                            score -= 0.04
-                    if title_norm and track.title:
-                        ratio = title_similarity(title_norm, track.title) or 0.0
-                        score += 0.25 * ratio
-                        if ratio >= 0.98:
-                            score += 0.45
-                    elif title and track.title:
-                        ratio = title_similarity(title, track.title) or 0.0
-                        score += 0.2 * ratio
-                    dur_ratio = duration_similarity(
-                        meta.duration_seconds, track.duration_seconds
-                    )
-                    if dur_ratio is not None:
-                        score += 0.05 * dur_ratio
-                    row.append(max(0.0, min(1.0, score)))
-                assignment_scores.append(row)
+        if applied and assigned_count > 0:
+            # Log coverage information
+            total = len([p for p in pending_results if not p.matched or force])
+            ratio = assigned_count / total if total else 1.0
+            display = self._display_path(directory)
 
-            assignment = best_assignment_max_score(assignment_scores, dummy_score=0.62)
-            for pending_index, track_index in enumerate(assignment):
-                if track_index is None:
-                    continue
-                if track_index >= len(tracks):
-                    continue
-                score = assignment_scores[pending_index][track_index]
-                if score < 0.63:
-                    continue
-                track = tracks[track_index]
-                release_match = ReleaseMatch(
-                    release=release_data, track=track, confidence=score
+            if ratio < 0.7:
+                logger.warning(
+                    "MusicBrainz assignment coverage %.0f%% for %s (%d/%d files assigned; avg confidence %.2f)",
+                    ratio * 100,
+                    display,
+                    assigned_count,
+                    total,
+                    avg,
                 )
-                lookup = self.musicbrainz.apply_release_match(
-                    to_assign[pending_index].meta, release_match
+            elif ratio < 1.0:
+                logger.info(
+                    "MusicBrainz assignment coverage %.0f%% for %s (%d/%d files assigned; avg confidence %.2f)",
+                    ratio * 100,
+                    display,
+                    assigned_count,
+                    total,
+                    avg,
                 )
-                if lookup:
-                    to_assign[pending_index].result = lookup
-                    to_assign[pending_index].matched = True
-                    applied = True
-                    assigned_count += 1
-                    assigned_total_score += float(score)
-                    release_data.mark_claimed(track.recording_id)
-                    if (
-                        to_assign[pending_index].meta.track_number is None
-                        and isinstance(track.number, int)
-                    ):
-                        to_assign[pending_index].meta.track_number = track.number
-                    if (
-                        to_assign[pending_index].meta.disc_number is None
-                        and isinstance(track.disc_number, int)
-                    ):
-                        to_assign[pending_index].meta.disc_number = track.disc_number
-            if applied:
-                ratio = assigned_count / len(to_assign) if to_assign else 1.0
-                avg = (assigned_total_score / assigned_count) if assigned_count else 0.0
-                display = self._display_path(directory)
-                if ratio < 0.7:
-                    logger.warning(
-                        "MusicBrainz assignment coverage %.0f%% for %s (%d/%d files assigned; avg confidence %.2f)",
-                        ratio * 100,
-                        display,
-                        assigned_count,
-                        len(to_assign),
-                        avg,
-                    )
-                elif ratio < 1.0:
-                    logger.info(
-                        "MusicBrainz assignment coverage %.0f%% for %s (%d/%d files assigned; avg confidence %.2f)",
-                        ratio * 100,
-                        display,
-                        assigned_count,
-                        len(to_assign),
-                        avg,
-                    )
+
         if applied:
+            release_data = self.musicbrainz.release_tracker.releases.get(release_id)
             artist = release_data.album_artist if release_data else None
             album = release_data.album_title if release_data else None
             self._persist_directory_release(
@@ -1675,6 +1310,7 @@ class AudioMetaDaemon:
                 artist_hint=artist,
                 album_hint=album,
             )
+
         return applied
 
     def _discogs_candidates(self, meta: TrackMetadata) -> list[dict]:
@@ -2075,42 +1711,20 @@ class AudioMetaDaemon:
         artist_hint: Optional[str] = None,
         album_hint: Optional[str] = None,
     ) -> list[str]:
-        keys: list[str] = []
-        for path_key in self._release_path_keys(directory):
-            if path_key not in keys:
-                keys.append(path_key)
-        path_artist, path_album = self._path_based_hints(directory)
-        final_artist = artist_hint or path_artist
-        final_album = album_hint or path_album
-        canonical = self._hint_cache_key(final_artist, final_album)
-        if canonical and canonical not in keys:
-            keys.append(canonical)
-        return keys
+        return self.directory_identity.directory_release_keys(
+            directory, artist_hint, album_hint
+        )
 
     def _release_path_keys(self, directory: Path) -> list[str]:
-        paths: list[Path] = []
-        try:
-            resolved = directory.resolve()
-        except FileNotFoundError:
-            resolved = directory
-        paths.append(resolved)
-        album_root = self._album_root(directory)
-        if album_root != directory:
-            try:
-                root_resolved = album_root.resolve()
-            except FileNotFoundError:
-                root_resolved = album_root
-            if root_resolved not in paths:
-                paths.append(root_resolved)
-        return [str(path) for path in paths]
+        return self.directory_identity._release_path_keys(directory)
 
     def _path_based_hints(self, directory: Path) -> tuple[Optional[str], Optional[str]]:
-        return directory_identity_logic.path_based_hints(directory)
+        return self.directory_identity.path_based_hints(directory)
 
     def _hint_cache_key(
         self, artist: Optional[str], album: Optional[str]
     ) -> Optional[str]:
-        return directory_identity_logic.hint_cache_key(artist, album)
+        return self.directory_identity.hint_cache_key(artist, album)
 
     @staticmethod
     def _normalize_hint_value(value: Optional[str]) -> str:
@@ -2119,7 +1733,7 @@ class AudioMetaDaemon:
     def _token_overlap_ratio(
         self, expected: Optional[str], candidate: Optional[str]
     ) -> float:
-        return directory_identity_logic.token_overlap_ratio(expected, candidate)
+        return self.directory_identity.token_overlap_ratio(expected, candidate)
 
     @staticmethod
     def _tokenize(value: Optional[str]) -> list[str]:

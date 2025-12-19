@@ -146,6 +146,47 @@ class MetadataCache:
         with self._lock:
             self._conn.close()
 
+    def get(self, key: str, namespace: str = "default") -> Optional[Any]:
+        """
+        Generic get from cache.
+
+        Args:
+            key: Cache key
+            namespace: Cache namespace (default: "default")
+
+        Returns:
+            Cached value (deserialized from JSON) or None
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM cache WHERE namespace = ? AND key = ?",
+                (namespace, key)
+            ).fetchone()
+
+            if row:
+                try:
+                    return json.loads(row[0])
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+    def set(self, key: str, value: Any, namespace: str = "default", ttl: Optional[int] = None) -> None:
+        """
+        Generic set to cache.
+
+        Args:
+            key: Cache key
+            value: Value to cache (will be JSON serialized)
+            namespace: Cache namespace (default: "default")
+            ttl: Time to live in seconds (currently ignored, for future use)
+        """
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cache (namespace, key, value) VALUES (?, ?, ?)",
+                (namespace, key, json.dumps(value))
+            )
+            self._conn.commit()
+
     def get_recording(self, recording_id: str) -> Optional[dict]:
         return self._get("recording", recording_id)
 

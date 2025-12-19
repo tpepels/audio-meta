@@ -146,7 +146,14 @@ class IdentityScanner:
         result.album_artists = self._build_clusters(raw_album_artists, "album_artist")
         result.conductors = self._build_clusters(raw_conductors, "conductor")
         result.performers = self._build_clusters(raw_performers, "performer")
-        
+
+        # Merge clusters with substring relationships
+        result.artists = self._merge_substring_clusters(result.artists, "artist")
+        result.composers = self._merge_substring_clusters(result.composers, "composer")
+        result.album_artists = self._merge_substring_clusters(result.album_artists, "album_artist")
+        result.conductors = self._merge_substring_clusters(result.conductors, "conductor")
+        result.performers = self._merge_substring_clusters(result.performers, "performer")
+
         return result
     
     def _iter_audio_files(self) -> Iterator[Path]:
@@ -348,12 +355,12 @@ class IdentityScanner:
     ) -> dict[str, IdentityCluster]:
         """Build identity clusters from raw collected names."""
         clusters: dict[str, IdentityCluster] = {}
-        
+
         for token, variants in raw_names.items():
             canonical = self._choose_canonical(variants)
             # Create unique ID by combining category and token
             canonical_id = f"{category}::{token}"
-            
+
             cluster = IdentityCluster(
                 canonical=canonical,
                 canonical_id=canonical_id,
@@ -361,8 +368,83 @@ class IdentityScanner:
                 occurrences=len(variants),
             )
             clusters[token] = cluster
-        
+
         return clusters
+
+    def _merge_substring_clusters(
+        self, clusters: dict[str, IdentityCluster], category: str
+    ) -> dict[str, IdentityCluster]:
+        """
+        Merge clusters where one token is a substring of another.
+
+        Example: "beethoven" is a substring of "ludwigvonbeethoven"
+        These should be merged into one cluster.
+        """
+        if len(clusters) < 2:
+            return clusters
+
+        # Sort tokens by length (shortest first)
+        tokens = sorted(clusters.keys(), key=len)
+        merged = {}
+        merged_into: dict[str, str] = {}  # Maps token -> merged_token
+
+        for i, short_token in enumerate(tokens):
+            # Skip if already merged
+            if short_token in merged_into:
+                continue
+
+            # Find longer tokens that contain this token
+            for long_token in tokens[i + 1:]:
+                if long_token in merged_into:
+                    continue
+
+                # Check if short token is a substring of long token
+                if short_token in long_token:
+                    # Merge: keep the cluster with more variants or longer canonical name
+                    short_cluster = clusters[short_token]
+                    long_cluster = clusters[long_token]
+
+                    # Prefer the cluster with more occurrences, or longer canonical name
+                    if short_cluster.occurrences >= long_cluster.occurrences:
+                        # Keep short, merge long into it
+                        primary_token = short_token
+                        secondary_cluster = long_cluster
+                    else:
+                        # Keep long, merge short into it
+                        primary_token = long_token
+                        secondary_cluster = short_cluster
+
+                    # Get primary cluster
+                    if primary_token not in merged:
+                        merged[primary_token] = clusters[primary_token]
+
+                    # Merge variants from secondary into primary
+                    merged[primary_token].variants.update(secondary_cluster.variants)
+                    merged[primary_token].occurrences += secondary_cluster.occurrences
+
+                    # Re-choose canonical from combined variants
+                    all_variants = list(merged[primary_token].variants)
+                    merged[primary_token].canonical = self._choose_canonical(all_variants)
+
+                    # Track that the other token was merged
+                    other_token = long_token if primary_token == short_token else short_token
+                    merged_into[other_token] = primary_token
+
+                    logger.info(
+                        "Merged %s clusters: '%s' + '%s' → '%s' (canonical: %s)",
+                        category,
+                        short_token,
+                        long_token,
+                        primary_token,
+                        merged[primary_token].canonical
+                    )
+                    break  # Move to next short token
+
+            # If not merged with anything, keep as is
+            if short_token not in merged_into and short_token not in merged:
+                merged[short_token] = clusters[short_token]
+
+        return merged
     
     def _choose_canonical(self, variants: list[str]) -> str:
         """

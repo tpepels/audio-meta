@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
 
-from .daemon_types import PendingResult
-from .models import TrackMetadata
+from ..daemon_types import PendingResult
+from ..models import TrackMetadata
 
 
 @dataclass(frozen=True)

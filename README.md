@@ -27,8 +27,8 @@ Resonance cleans your metadata, fixes naming inconsistencies, and (optionally) r
 ## Install
 
 ```bash
-git clone https://github.com/your-user/resonance.git
-cd resonance
+git clone https://github.com/tpepels/audio-meta.git
+cd audio-meta
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
@@ -141,6 +141,22 @@ resonance singletons      # review single-track folders
 * You can stop and resume at any time
 
 This tool is meant to fade into the background.
+
+---
+
+## Documentation
+
+### For Users
+- This README - Installation and usage guide
+
+### For Developers
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Development tracking (bugs, TODOs, refactoring progress)
+- **[docs/](docs/)** - Organized technical documentation
+  - [Architecture](docs/architecture/ARCHITECTURE.md) - Clean architecture specification
+  - [Bug Fixes](docs/bugs/BUGFIXES.md) - Detailed bug fix documentation
+  - [Reference](docs/reference/) - System analysis and edge cases
+
+See [docs/README.md](docs/README.md) for complete documentation index.
 
 ---
 
